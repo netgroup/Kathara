@@ -839,6 +839,8 @@ class DockerMachine(object):
                 raise MachineNotRunningError(machine_name)
 
         command = shlex.split(command) if type(command) is str else command
+        if "uml" in container.labels:
+            command = [container.labels['shell'], '-c', shlex.join(command)]
         exec_result = self._exec_run(container,
                                      cmd=command,
                                      stdout=True,
