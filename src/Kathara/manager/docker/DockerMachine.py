@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import shlex
 import sys
@@ -17,13 +18,14 @@ from docker.types import Ulimit
 from docker.utils import version_lt, version_gte
 
 from .DockerImage import DockerImage
+from .UmlHelpers import uml_helpers_tar
 from .exec_stream.DockerExecStream import DockerExecStream
 from .stats.DockerMachineStats import DockerMachineStats
 from ... import utils
 from ...decorators import privileged
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import MountDeniedError, MachineAlreadyExistsError, DockerPluginError, \
-    MachineBinaryError, MachineNotRunningError, PrivilegeError, InvocationError
+    MachineBinaryError, MachineNotRunningError, PrivilegeError, InvocationError, MachineOptionError
 from ...model.Interface import Interface
 from ...model.Lab import Lab
 from ...model.Link import Link, BRIDGE_LINK_NAME
@@ -325,6 +327,22 @@ class DockerMachine(object):
         except MountDeniedError:
             logging.warning(f"Volumes of device `{machine.name}` will not be mounted.")
 
+        # A device with its own UML kernel: the container runs that kernel on its own rootfs (hostfs), the
+        # helpers attach one UML interface per collision domain and forward the device shell into the UML.
+        uml_kernel = machine.meta["kernel"] if "kernel" in machine.meta else None
+        environment = machine.meta['envs']
+        if uml_kernel:
+            # A relative path is relative to the network scenario directory, as the other files of the scenario.
+            # Links are resolved, so that Docker mounts the kernel itself.
+            if not os.path.isabs(uml_kernel) and machine.lab.fs.hassyspath(""):
+                uml_kernel = os.path.join(machine.lab.fs.getsyspath(""), uml_kernel)
+            uml_kernel = os.path.realpath(uml_kernel)
+            if not os.path.isfile(uml_kernel):
+                raise MachineOptionError(f"UML kernel `{uml_kernel}` of device `{machine.name}` not found.")
+            logging.debug(f"Device `{machine.name}` runs on UML kernel `{uml_kernel}`...")
+            volumes[uml_kernel] = {'bind': '/kathara-uml-kernel', 'mode': 'ro'}
+            environment = dict(environment, KATHARA_UML_IFACES=str(len(machine.interfaces)))
+
         privileged = machine.is_privileged()
         if privileged and not utils.is_admin():
             raise PrivilegeError(f"You must be root in order to start device `{machine.name}` in privileged mode.")
@@ -357,6 +375,10 @@ class DockerMachine(object):
                 labels["bridged_iface"] = str(machine.meta["bridged_iface"])
 
             entrypoint = shlex.split(machine.meta["entrypoint"]) if "entrypoint" in machine.meta else None
+            if uml_kernel:
+                labels["uml"] = "1"
+                labels["shell"] = "/kathara-uml/ushell"
+                entrypoint = ["/kathara-uml/start"]
             args = machine.meta["args"] if "args" in machine.meta and machine.meta["args"] else None
             if args:
                 args = shlex.split(args) if type(args) == str else args
@@ -369,7 +391,7 @@ class DockerMachine(object):
                                                               network=first_network.name if first_network else None,
                                                               network_mode="bridge" if first_network else "none",
                                                               networking_config=networking_config,
-                                                              environment=machine.meta['envs'],
+                                                              environment=environment,
                                                               sysctls=sysctl_parameters,
                                                               mem_limit=memory,
                                                               nano_cpus=cpus,
@@ -390,6 +412,9 @@ class DockerMachine(object):
         tar_data = machine.pack_data()
         if tar_data:
             self.copy_files(machine_container, "/", tar_data)
+
+        if uml_kernel:
+            self.copy_files(machine_container, "/", uml_helpers_tar())
 
         machine.api_object = machine_container
 
@@ -541,6 +566,11 @@ class DockerMachine(object):
         if "_bridge_connected" not in machine.meta and machine.is_bridged():
             bridge_link = machine.lab.get_or_new_link(BRIDGE_LINK_NAME).api_object
             bridge_link.connect(machine.api_object)
+
+        # A UML device boots now that all its interfaces are attached.
+        if "uml" in machine.api_object.labels:
+            logging.debug(f"Booting UML kernel of device `{machine.name}`...")
+            self._exec_run(machine.api_object, cmd=["touch", "/run/kathara-uml.ready"], detach=False)
 
         # Append executed machine startup commands inside the /var/log/startup.log file
         if machine.meta['exec_commands']:

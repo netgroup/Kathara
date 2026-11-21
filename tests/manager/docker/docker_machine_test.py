@@ -16,7 +16,8 @@ from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
 from src.Kathara.manager.docker.DockerMachine import DockerMachine
 from src.Kathara.exceptions import DockerPluginError, MachineBinaryError, PrivilegeError, InvocationError, \
-    MountDeniedError
+    MountDeniedError, MachineOptionError
+from src.Kathara.manager.docker.UmlHelpers import uml_helpers_tar
 from src.Kathara.types import SharedCollisionDomainsOption
 from src.Kathara.event.EventDispatcher import EventDispatcher
 
@@ -2112,3 +2113,185 @@ def test_get_machines_stats_privilege_error(mock_is_admin, docker_machine):
     mock_is_admin.return_value = False
     with pytest.raises(PrivilegeError):
         next(docker_machine.get_machines_stats(lab_hash="lab_hash", machine_name="test_device", user=None))
+
+
+#
+# TEST: UML devices
+#
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                            mock_get_machines_api_objects_by_filters, docker_machine, default_device, tmp_path):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    kernel = tmp_path / "linux"
+    kernel.write_bytes(b"uml")
+    default_device.add_meta("kernel", str(kernel))
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    docker_machine.create(default_device)
+    docker_machine.client.containers.create.assert_called_once_with(
+        image='kathara/test',
+        name='dev_prefix_test-user_test_device_9pe3y6IDMwx4PfOPu5mbNg',
+        hostname='test_device',
+        cap_add=['NET_ADMIN', 'NET_RAW', 'NET_BROADCAST', 'NET_BIND_SERVICE', 'SYS_ADMIN'],
+        privileged=False,
+        network=None,
+        network_mode='none',
+        networking_config=None,
+        sysctls={'net.ipv4.conf.all.rp_filter': 0,
+                 'net.ipv4.conf.default.rp_filter': 0,
+                 'net.ipv4.conf.lo.rp_filter': 0,
+                 'net.ipv4.ip_forward': 1,
+                 'net.ipv4.icmp_ratelimit': 0,
+                 'net.ipv6.conf.all.forwarding': 1,
+                 'net.ipv6.conf.all.accept_ra': 0,
+                 'net.ipv6.icmp.ratelimit': 0,
+                 'net.ipv6.conf.default.disable_ipv6': 0,
+                 'net.ipv6.conf.all.disable_ipv6': 0
+                 },
+        environment={'KATHARA_UML_IFACES': '0'},
+        mem_limit='64m',
+        nano_cpus=2000000000,
+        ports=None,
+        tty=True,
+        stdin_open=True,
+        detach=True,
+        volumes={str(kernel): {'bind': '/kathara-uml-kernel', 'mode': 'ro'}},
+        labels={'name': 'test_device', 'lab_hash': '9pe3y6IDMwx4PfOPu5mbNg', 'user': 'test-user', 'app': 'kathara',
+                'shell': '/kathara-uml/ushell', 'uml': '1'},
+        ulimits=[],
+        entrypoint=['/kathara-uml/start'],
+        command=None
+    )
+
+    mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
+                                            uml_helpers_tar())
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_not_found(mock_get_current_user_name, mock_setting_get_instance,
+                                      mock_get_machines_api_objects_by_filters, docker_machine, default_device,
+                                      tmp_path):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    default_device.add_meta("kernel", str(tmp_path / "missing"))
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    with pytest.raises(MachineOptionError):
+        docker_machine.create(default_device)
+
+    assert not docker_machine.client.containers.create.called
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_relative_to_lab(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                            mock_get_machines_api_objects_by_filters, docker_machine, tmp_path,
+                                            monkeypatch):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    (tmp_path / "lab").mkdir()
+    (tmp_path / "out").mkdir()
+    (tmp_path / "elsewhere" / "deeper").mkdir(parents=True)
+    kernel = tmp_path / "out" / "linux"
+    kernel.write_bytes(b"uml")
+    device = Machine(Lab('Default scenario', str(tmp_path / "lab")), "test_device")
+    device.add_meta("kernel", "../out/linux")
+    monkeypatch.chdir(tmp_path / "elsewhere" / "deeper")
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    docker_machine.create(device)
+    assert docker_machine.client.containers.create.call_args.kwargs['volumes'] == \
+           {str(kernel): {'bind': '/kathara-uml-kernel', 'mode': 'ro'}}
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_through_link(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                         mock_get_machines_api_objects_by_filters, docker_machine, tmp_path):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    (tmp_path / "lab").mkdir()
+    (tmp_path / "out").mkdir()
+    kernel = tmp_path / "out" / "linux"
+    kernel.write_bytes(b"uml")
+    (tmp_path / "lab" / "kernel").symlink_to("../out")
+    device = Machine(Lab('Default scenario', str(tmp_path / "lab")), "test_device")
+    device.add_meta("kernel", "kernel/linux")
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    docker_machine.create(device)
+    assert docker_machine.client.containers.create.call_args.kwargs['volumes'] == \
+           {str(kernel): {'bind': '/kathara-uml-kernel', 'mode': 'ro'}}
+
+
+def test_start_uml(docker_machine, default_device, default_link, default_link_b):
+    default_device.add_interface(default_link)
+    default_device.add_interface(default_link_b)
+    default_device.api_object.labels = {'uml': '1', 'shell': '/kathara-uml/ushell'}
+    docker_machine.client.api.exec_create.return_value = {"Id": "1234"}
+    docker_machine.client.api.exec_start.return_value = ("cmd_stdout", "cmd_stderr")
+    docker_machine.client.api.exec_inspect.return_value = {"ExitCode": 0}
+    default_device.api_object.start.return_value = True
+
+    docker_machine.start(default_device)
+
+    default_device.api_object.start.assert_called_once()
+    default_link_b.api_object.connect.assert_called_once()
+    # The UML boots after the interfaces, then the startup commands go through its shell
+    assert docker_machine.client.api.exec_create.call_count == 2
+    assert docker_machine.client.api.exec_create.call_args_list[0].args[1] == ["touch", "/run/kathara-uml.ready"]
+    assert docker_machine.client.api.exec_create.call_args_list[1].args[1][0] == '/kathara-uml/ushell'

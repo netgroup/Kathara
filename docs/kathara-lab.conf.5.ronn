@@ -95,6 +95,13 @@ If `arg` is an option name, then `device` will be launched with option `arg` set
 	The user must have appropriate permissions on the HOST directory; otherwise, an exception will be raised.
 	NOTE: On Megalos, the volume is mounted on the worker node where the device is running, not on the user's local machine.
 
+* `kernel` (string):
+	Runs the device on its own User-Mode Linux (UML) kernel instead of the host kernel: the path of a UML kernel binary
+	on the host, relative to the network scenario directory. The UML kernel uses the container filesystem as its root,
+	so startup files, `connect`, the shared folder and volumes work as for any device. The image must have the
+	OpenSSH client and server, as kathara/base has.
+	NOTE: Only with the Docker manager.
+
 
 ## NETWORK SCENARIO META INFORMATION
 
