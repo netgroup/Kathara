@@ -21,6 +21,7 @@ def test_uml_helpers_tar():
 def test_uml_helpers_scripts():
     for script in (START, INIT, USHELL):
         assert script.startswith('#!/bin/bash\n')
+    assert 'seccomp=${KATHARA_UML_SECCOMP:-auto}' in START
     assert 'init=/kathara-uml/init' in START
     assert '/run/kathara-uml.ready' in START
     assert '-o ConnectionAttempts=120' in USHELL

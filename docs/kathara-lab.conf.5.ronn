@@ -99,7 +99,8 @@ If `arg` is an option name, then `device` will be launched with option `arg` set
 	Runs the device on its own User-Mode Linux (UML) kernel instead of the host kernel: the path of a UML kernel binary
 	on the host, relative to the network scenario directory. The UML kernel uses the container filesystem as its root,
 	so startup files, `exec`, `connect`, the shared folder and volumes work as for any device. The image must have the
-	OpenSSH client and server, as kathara/base has.
+	OpenSSH client and server, as kathara/base has. The variable KATHARA_UML_SECCOMP (`env` option) sets the seccomp
+	mode of UML: auto (default), on or off.
 	NOTE: Only with the Docker manager.
 
 

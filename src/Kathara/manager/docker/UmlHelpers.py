@@ -12,6 +12,9 @@ START = r"""#!/bin/bash
 # on the container's own rootfs (hostfs), one vector raw interface per
 # ethN plus one on um1. The console goes to a file and stdin stays open:
 # with a pipe on stdout or stdin at EOF the UML boot stops.
+# KATHARA_UML_SECCOMP (dev[env]) is the seccomp= option of UML: auto (the
+# default here) uses the seccomp mode where it works and falls back to
+# ptrace (the kernel default, off); the console log says which one ran.
 
 KEY=/var/lib/kathara-uml/id
 UML_TMP=/tmp/uml
@@ -66,8 +69,9 @@ done
 add_vector "$n" um1
 ip link set um0 up
 
+seccomp=${KATHARA_UML_SECCOMP:-auto}
 ifaces=(/sys/class/net/*)
-echo "start: ${ifaces[*]##*/} -> ${vectors[*]}" > /var/log/uml-start.log
+echo "start: ${ifaces[*]##*/} -> ${vectors[*]} seccomp=$seccomp" > /var/log/uml-start.log
 
 # The stdin of the console: a FIFO that sleep keeps open.
 mkdir -p "$UML_TMP"
@@ -77,7 +81,7 @@ sleep infinity > "$CONSOLE_IN" &
 
 exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="${KATHARA_UML_MEM:-256M}" \
 	root=/dev/root rootfstype=hostfs rootflags=/ rw init=/kathara-uml/init \
-	con0=fd:0,fd:1 con=null "${vectors[@]}" \
+	con0=fd:0,fd:1 con=null seccomp="$seccomp" "${vectors[@]}" \
 	< "$CONSOLE_IN" > /var/log/uml-console.log 2>&1
 """
 
