@@ -105,6 +105,10 @@ class MachineNotReadyError(Exception):
         super().__init__(f"Device `{machine_name}` is not ready.")
 
 
+class MachineBootError(Exception):
+    pass
+
+
 class MachineBinaryError(Exception):
     __slots__ = ['binary', 'machine_name']
 

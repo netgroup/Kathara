@@ -11,6 +11,12 @@ from typing import BinaryIO, Dict, Optional, Set, Tuple, Union
 # device, in which ushell runs the commands and which connect opens, and ulimit.conf, the ulimits of the device,
 # which init sets before it starts sshd.
 
+# The file that init touches once the UML has booted, in the rootfs of the container (/run of the UML is the one of
+# the container, through hostfs).
+UML_BOOTED = "/run/kathara-uml.booted"
+# The file that start writes the UML console to.
+UML_CONSOLE = "/var/log/uml-console.log"
+
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
 # attached every interface (it touches /run/kathara-uml.ready), adds a
@@ -180,8 +186,9 @@ exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="$mem" \
 INIT = r"""#!/bin/bash
 # Kathara UML device, PID 1 inside the UML: mounts, the interfaces named
 # as Kathara names them (vecK -> ethK, the last one -> kmgmt), the sysctls
-# and the ulimits of the device, sshd for /kathara-uml/ushell, then a
-# status file the container can read.
+# and the ulimits of the device, sshd for /kathara-uml/ushell, then the
+# file that says the UML has booted and a status file, both for the
+# container to read.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 STATUS=/var/tmp/uml-status
@@ -313,6 +320,9 @@ apply_ulimits
 # the session would reset the ulimits that init has set.
 mkdir -p /run/sshd
 /usr/sbin/sshd -o ListenAddress="$MGMT_UML" -o UseDNS=no -o PermitRootLogin=prohibit-password -o UsePAM=no
+
+# Kathara waits for this file before it runs the startup of the device.
+touch /run/kathara-uml.booted
 
 while true; do
 	write_status

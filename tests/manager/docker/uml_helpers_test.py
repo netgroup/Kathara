@@ -8,7 +8,7 @@ sys.path.insert(0, './')
 import pytest
 
 from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, uml_sysctl_conf, uml_environment, \
-    uml_ulimit_conf, uml_kernel_error, START, INIT, USHELL
+    uml_ulimit_conf, uml_kernel_error, START, INIT, USHELL, UML_BOOTED, UML_CONSOLE
 
 
 def test_uml_helpers_tar():
@@ -37,6 +37,16 @@ def test_uml_helpers_management_link():
     assert 'MGMT_CONTAINER=169.254.77.1/30\n' in START
     assert 'MGMT_UML=169.254.77.2\n' in INIT
     assert 'MGMT_UML=169.254.77.2\n' in USHELL
+
+
+def test_uml_helpers_booted():
+    # init touches the file that DockerMachine.start() waits for.
+    assert f'\ntouch {UML_BOOTED}\n' in INIT
+
+
+def test_uml_helpers_console():
+    # start writes the console where DockerMachine.start() reads it.
+    assert f'> {UML_CONSOLE} 2>&1\n' in START
 
 
 def test_uml_sysctl_conf():

@@ -1,11 +1,13 @@
+import io
 import os
 import shlex
 import sys
+import tarfile
 from unittest import mock
 from unittest.mock import Mock, call
 
 import pytest
-from docker.errors import APIError
+from docker.errors import APIError, NotFound
 from requests import Response
 
 sys.path.insert(0, './')
@@ -15,10 +17,10 @@ from src.Kathara.manager.docker.exec_stream.DockerExecStream import DockerExecSt
 from src.Kathara.model.Lab import Lab
 from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
-from src.Kathara.manager.docker.DockerMachine import DockerMachine
+from src.Kathara.manager.docker.DockerMachine import DockerMachine, UML_BOOT_TIMEOUT
 from src.Kathara.exceptions import DockerPluginError, MachineBinaryError, PrivilegeError, InvocationError, \
-    MountDeniedError, MachineOptionError
-from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar
+    MountDeniedError, MachineOptionError, MachineBootError
+from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, UML_BOOTED, UML_CONSOLE
 from src.Kathara.types import SharedCollisionDomainsOption
 from src.Kathara.event.EventDispatcher import EventDispatcher
 
@@ -2437,10 +2439,27 @@ def test_create_with_kernel_and_entrypoint(mock_get_current_user_name, mock_sett
     assert not docker_machine.client.containers.create.called
 
 
+def container_files(files: dict):
+    """Return a get_archive of a container that holds the files given, by path, with their content."""
+    def get_archive(path):
+        if path not in files:
+            raise NotFound(f"Could not find the file {path} in container")
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w") as tar:
+            info = tarfile.TarInfo(os.path.basename(path))
+            info.size = len(files[path])
+            tar.addfile(info, io.BytesIO(files[path]))
+        return iter([data.getvalue()]), {}
+
+    return get_archive
+
+
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):
     default_device.add_interface(default_link)
     default_device.add_interface(default_link_b)
     default_device.api_object.labels = {'uml': '1', 'shell': '/kathara-uml/ushell'}
+    default_device.api_object.status = "running"
+    default_device.api_object.get_archive.side_effect = container_files({UML_BOOTED: b""})
     docker_machine.client.api.exec_create.return_value = {"Id": "1234"}
     docker_machine.client.api.exec_start.return_value = ("cmd_stdout", "cmd_stderr")
     docker_machine.client.api.exec_inspect.return_value = {"ExitCode": 0}
@@ -2453,7 +2472,68 @@ def test_start_uml(docker_machine, default_device, default_link, default_link_b)
     # The UML boots after the interfaces, then the startup commands go through its shell
     assert docker_machine.client.api.exec_create.call_count == 2
     assert docker_machine.client.api.exec_create.call_args_list[0].args[1] == ["touch", "/run/kathara-uml.ready"]
+    default_device.api_object.get_archive.assert_called_with(UML_BOOTED)
     assert docker_machine.client.api.exec_create.call_args_list[1].args[1][0] == '/kathara-uml/ushell'
+    assert not default_device.api_object.remove.called
+
+
+def test_start_uml_exited(docker_machine, default_device):
+    default_device.api_object.labels = {'uml': '1', 'shell': '/kathara-uml/ushell'}
+    default_device.api_object.status = "exited"
+    default_device.api_object.attrs = {"NetworkSettings": {"Networks": {}}, "State": {"ExitCode": 1}}
+    console = b"Checking PROT_EXEC mmap in /tmp/uml...OK\nToo few physical memory! Needed=171966464, given=162312192\n"
+    default_device.api_object.get_archive.side_effect = container_files({UML_CONSOLE: console})
+    docker_machine.client.api.exec_create.return_value = {"Id": "1234"}
+    docker_machine.client.api.exec_start.return_value = ("cmd_stdout", "cmd_stderr")
+    docker_machine.client.api.exec_inspect.return_value = {"ExitCode": 0}
+
+    with pytest.raises(MachineBootError, match="its container exited with code 1") as error:
+        docker_machine.start(default_device)
+
+    assert "Too few physical memory! Needed=171966464, given=162312192" in str(error.value)
+    default_device.api_object.remove.assert_called_once_with(force=True)
+    # The startup commands are not run
+    assert docker_machine.client.api.exec_create.call_count == 1
+
+
+def test_start_uml_panic(docker_machine, default_device):
+    default_device.api_object.labels = {'uml': '1', 'shell': '/kathara-uml/ushell'}
+    default_device.api_object.status = "running"
+    console = (b"Checking that seccomp filters can be installed...OK\n"
+               b"<0>Kernel panic - not syncing: Failed to allocate 5791744 bytes for node 0 memory map\n"
+               b"<4>Call Trace:\n<4> [<600248e7>] vpanic+0x12a/0x348\n")
+    default_device.api_object.get_archive.side_effect = container_files({UML_CONSOLE: console})
+    docker_machine.client.api.exec_create.return_value = {"Id": "1234"}
+    docker_machine.client.api.exec_start.return_value = ("cmd_stdout", "cmd_stderr")
+    docker_machine.client.api.exec_inspect.return_value = {"ExitCode": 0}
+
+    with pytest.raises(MachineBootError, match="its kernel panicked") as error:
+        docker_machine.start(default_device)
+
+    assert str(error.value).endswith(
+        "<0>Kernel panic - not syncing: Failed to allocate 5791744 bytes for node 0 memory map"
+    )
+    default_device.api_object.remove.assert_called_once_with(force=True)
+    assert docker_machine.client.api.exec_create.call_count == 1
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.time")
+def test_start_uml_not_booted(mock_time, docker_machine, default_device):
+    mock_time.monotonic.side_effect = [0, 0, UML_BOOT_TIMEOUT + 1]
+    default_device.api_object.labels = {'uml': '1', 'shell': '/kathara-uml/ushell'}
+    default_device.api_object.status = "running"
+    default_device.api_object.get_archive.side_effect = container_files({UML_CONSOLE: b""})
+    docker_machine.client.api.exec_create.return_value = {"Id": "1234"}
+    docker_machine.client.api.exec_start.return_value = ("cmd_stdout", "cmd_stderr")
+    docker_machine.client.api.exec_inspect.return_value = {"ExitCode": 0}
+
+    with pytest.raises(MachineBootError, match=f"it did not boot in {UML_BOOT_TIMEOUT} seconds") as error:
+        docker_machine.start(default_device)
+
+    assert str(error.value).endswith("(empty)")
+    mock_time.sleep.assert_called_once_with(0.2)
+    default_device.api_object.remove.assert_called_once_with(force=True)
+    assert docker_machine.client.api.exec_create.call_count == 1
 
 
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")

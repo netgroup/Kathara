@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import re
@@ -18,14 +19,14 @@ from docker.types import Ulimit
 from docker.utils import version_lt, version_gte
 
 from .DockerImage import DockerImage
-from .UmlHelpers import UmlSettings, uml_helpers_tar, uml_kernel_error
+from .UmlHelpers import UmlSettings, uml_helpers_tar, uml_kernel_error, UML_BOOTED, UML_CONSOLE
 from .exec_stream.DockerExecStream import DockerExecStream
 from .stats.DockerMachineStats import DockerMachineStats
 from ... import utils
 from ...decorators import privileged
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import MountDeniedError, MachineAlreadyExistsError, DockerPluginError, \
-    MachineBinaryError, MachineNotRunningError, PrivilegeError, InvocationError, MachineOptionError
+    MachineBinaryError, MachineNotRunningError, PrivilegeError, InvocationError, MachineOptionError, MachineBootError
 from ...model.Interface import Interface
 from ...model.Lab import Lab
 from ...model.Link import Link, BRIDGE_LINK_NAME
@@ -34,6 +35,11 @@ from ...setting.Setting import Setting
 from ...utils import parse_docker_engine_version
 
 RP_FILTER_NAMESPACE = "net.ipv4.conf.%s.rp_filter"
+# How long the UML kernel of a device may take to boot, in seconds.
+UML_BOOT_TIMEOUT = 120
+# How a Linux kernel starts the line of a panic (kernel/panic.c). With panic_timeout 0, the default, it then stays
+# in panic() for ever: the process of a UML kernel does not exit.
+UML_PANIC = "Kernel panic - not syncing"
 OCI_RUNTIME_RE = re.compile(
     r"OCI runtime exec failed(.*?)(stat (.*): no such file or directory|exec: \"(.*)\": executable file not found)"
 )
@@ -591,6 +597,7 @@ class DockerMachine(object):
         if "uml" in machine.api_object.labels:
             logging.debug(f"Booting UML kernel of device `{machine.name}`...")
             self._exec_run(machine.api_object, cmd=["touch", "/run/kathara-uml.ready"], detach=False)
+            self._wait_uml_boot(machine)
 
         # Append executed machine startup commands inside the /var/log/startup.log file
         if machine.meta['exec_commands']:
@@ -631,6 +638,68 @@ class DockerMachine(object):
         # Delete to avoid keeping dirty state
         if '_bridge_connected' in machine.meta:
             del machine.meta['_bridge_connected']
+
+    @staticmethod
+    def _wait_uml_boot(machine: Machine) -> None:
+        """Wait until the UML kernel of a device has booted, that is until its init has touched UML_BOOTED.
+
+        Args:
+            machine (Kathara.model.Machine): A Kathara device with its own UML kernel, whose container runs.
+
+        Returns:
+            None
+
+        Raises:
+            MachineBootError: If the container exits before, the UML kernel panics, or it does not boot in
+                UML_BOOT_TIMEOUT seconds. The container is removed, and the error holds the line of the panic, or else
+                the last lines of the UML console.
+        """
+        container = machine.api_object
+        deadline = time.monotonic() + UML_BOOT_TIMEOUT
+        while True:
+            container.reload()
+            console = (DockerMachine._read_file(container, UML_CONSOLE) or b"").decode("utf-8", errors="replace")
+            if container.status != "running":
+                reason = f"its container exited with code {container.attrs['State']['ExitCode']}"
+                break
+            if UML_PANIC in console:
+                reason = "its kernel panicked"
+                break
+            if DockerMachine._read_file(container, UML_BOOTED) is not None:
+                return
+            if time.monotonic() > deadline:
+                reason = f"it did not boot in {UML_BOOT_TIMEOUT} seconds"
+                break
+            time.sleep(0.2)
+
+        lines = console.strip().splitlines()
+        shown = [line for line in lines if UML_PANIC in line][:1] or lines[-5:] or ["(empty)"]
+        try:
+            container.remove(force=True)
+        except APIError as remove_error:
+            logging.debug(f"Cannot remove device `{machine.name}` after a failed boot: {remove_error}")
+        raise MachineBootError(
+            f"The UML kernel of device `{machine.name}` did not boot: {reason}. "
+            f"From its console ({UML_CONSOLE}):\n" + "\n".join(shown)
+        )
+
+    @staticmethod
+    def _read_file(container: docker.models.containers.Container, path: str) -> Optional[bytes]:
+        """Return the content of a file of a container, running or not.
+
+        Args:
+            container (docker.models.containers.Container): A Docker container.
+            path (str): The path of the file in the container.
+
+        Returns:
+            Optional[bytes]: The content of the file, or None if there is no such file.
+        """
+        try:
+            bits, _ = container.get_archive(path)
+        except docker.errors.NotFound:
+            return None
+        with tarfile.open(fileobj=io.BytesIO(b"".join(bits))) as tar:
+            return tar.extractfile(tar.getmembers()[0]).read()
 
     def undeploy(self, lab_hash: str, selected_machines: Set[str] = None, excluded_machines: Set[str] = None) -> None:
         """Undeploy the devices contained in the network scenario defined by the lab_hash.
