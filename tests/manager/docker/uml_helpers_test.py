@@ -4,11 +4,12 @@ import tarfile
 
 sys.path.insert(0, './')
 
-from src.Kathara.manager.docker.UmlHelpers import uml_helpers_tar, uml_sysctl_conf, START, INIT, USHELL
+from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, uml_sysctl_conf, START, INIT, \
+    USHELL
 
 
 def test_uml_helpers_tar():
-    tar = tarfile.open(fileobj=io.BytesIO(uml_helpers_tar({'net.ipv4.ip_forward': 1})))
+    tar = tarfile.open(fileobj=io.BytesIO(uml_helpers_tar(UmlSettings(sysctls={'net.ipv4.ip_forward': 1}))))
 
     assert tar.getnames() == ['kathara-uml', 'kathara-uml/start', 'kathara-uml/init', 'kathara-uml/ushell',
                               'kathara-uml/sysctl.conf']

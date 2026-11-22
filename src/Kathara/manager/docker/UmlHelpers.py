@@ -265,11 +265,33 @@ def uml_sysctl_conf(sysctls: Dict[str, Union[int, str]]) -> str:
     return "".join(f"{name}={value}\n" for name, value in sorted(sysctls.items()))
 
 
-def uml_helpers_tar(sysctls: Dict[str, Union[int, str]]) -> bytes:
-    """Return a tar archive with the UML helpers in kathara-uml/, executable, and sysctl.conf, to be extracted in `/`.
+class UmlSettings(object):
+    """The settings of a device that the helpers apply inside its UML kernel, as Docker applies them to a container.
+
+    Attributes:
+        sysctls (Dict[str, Union[int, str]]): The sysctls that Kathara gives the container, the interface ones
+            included.
+    """
+    __slots__ = ['sysctls']
+
+    def __init__(self, sysctls: Dict[str, Union[int, str]]) -> None:
+        self.sysctls: Dict[str, Union[int, str]] = sysctls
+
+    def files(self) -> Dict[str, str]:
+        """Return the files that carry the settings into the container, by their name in /kathara-uml.
+
+        Returns:
+            Dict[str, str]: The content of each file.
+        """
+        return {"sysctl.conf": uml_sysctl_conf(self.sysctls)}
+
+
+def uml_helpers_tar(settings: UmlSettings) -> bytes:
+    """Return a tar archive with the UML helpers in kathara-uml/, executable, and the files of the settings of the
+    device, to be extracted in `/`.
 
     Args:
-        sysctls (Dict[str, Union[int, str]]): The sysctls that init applies to the UML kernel.
+        settings (UmlSettings): The settings that the helpers apply inside the UML kernel.
 
     Returns:
         bytes: The tar archive.
@@ -280,8 +302,8 @@ def uml_helpers_tar(sysctls: Dict[str, Union[int, str]]) -> bytes:
         directory.type = tarfile.DIRTYPE
         directory.mode = 0o755
         tar.addfile(directory)
-        files = (("start", START, 0o755), ("init", INIT, 0o755), ("ushell", USHELL, 0o755),
-                 ("sysctl.conf", uml_sysctl_conf(sysctls), 0o644))
+        files = [("start", START, 0o755), ("init", INIT, 0o755), ("ushell", USHELL, 0o755)]
+        files += [(name, content, 0o644) for name, content in settings.files().items()]
         for name, content, mode in files:
             encoded = content.encode("utf-8")
             info = tarfile.TarInfo("kathara-uml/" + name)

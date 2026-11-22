@@ -17,7 +17,7 @@ from src.Kathara.model.Machine import Machine
 from src.Kathara.manager.docker.DockerMachine import DockerMachine
 from src.Kathara.exceptions import DockerPluginError, MachineBinaryError, PrivilegeError, InvocationError, \
     MountDeniedError, MachineOptionError
-from src.Kathara.manager.docker.UmlHelpers import uml_helpers_tar
+from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar
 from src.Kathara.types import SharedCollisionDomainsOption
 from src.Kathara.event.EventDispatcher import EventDispatcher
 
@@ -2179,7 +2179,7 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
     )
 
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(sysctls))
+                                            uml_helpers_tar(UmlSettings(sysctls=sysctls)))
 
 
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
@@ -2316,7 +2316,7 @@ def test_create_with_kernel_sysctls(mock_get_current_user_name, mock_setting_get
     assert uml_sysctls['net.ipv4.ip_forward'] == 1
     assert uml_sysctls['net.ipv6.conf.all.disable_ipv6'] == 1
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(uml_sysctls))
+                                            uml_helpers_tar(UmlSettings(sysctls=uml_sysctls)))
 
 
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):

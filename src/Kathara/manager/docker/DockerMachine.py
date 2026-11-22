@@ -18,7 +18,7 @@ from docker.types import Ulimit
 from docker.utils import version_lt, version_gte
 
 from .DockerImage import DockerImage
-from .UmlHelpers import uml_helpers_tar
+from .UmlHelpers import UmlSettings, uml_helpers_tar
 from .exec_stream.DockerExecStream import DockerExecStream
 from .stats.DockerMachineStats import DockerMachineStats
 from ... import utils
@@ -416,7 +416,7 @@ class DockerMachine(object):
             self.copy_files(machine_container, "/", tar_data)
 
         if uml_kernel:
-            self.copy_files(machine_container, "/", uml_helpers_tar(uml_sysctls))
+            self.copy_files(machine_container, "/", uml_helpers_tar(UmlSettings(sysctls=uml_sysctls)))
 
         machine.api_object = machine_container
 
