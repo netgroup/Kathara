@@ -2142,6 +2142,16 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
         'shared_mount': False
     })
     mock_setting_get_instance.return_value = setting_mock
+    sysctls = {'net.ipv4.conf.all.rp_filter': 0,
+               'net.ipv4.conf.default.rp_filter': 0,
+               'net.ipv4.conf.lo.rp_filter': 0,
+               'net.ipv4.ip_forward': 1,
+               'net.ipv4.icmp_ratelimit': 0,
+               'net.ipv6.conf.all.forwarding': 1,
+               'net.ipv6.conf.all.accept_ra': 0,
+               'net.ipv6.icmp.ratelimit': 0,
+               'net.ipv6.conf.default.disable_ipv6': 0,
+               'net.ipv6.conf.all.disable_ipv6': 0}
     docker_machine.create(default_device)
     docker_machine.client.containers.create.assert_called_once_with(
         image='kathara/test',
@@ -2152,17 +2162,7 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
         network=None,
         network_mode='none',
         networking_config=None,
-        sysctls={'net.ipv4.conf.all.rp_filter': 0,
-                 'net.ipv4.conf.default.rp_filter': 0,
-                 'net.ipv4.conf.lo.rp_filter': 0,
-                 'net.ipv4.ip_forward': 1,
-                 'net.ipv4.icmp_ratelimit': 0,
-                 'net.ipv6.conf.all.forwarding': 1,
-                 'net.ipv6.conf.all.accept_ra': 0,
-                 'net.ipv6.icmp.ratelimit': 0,
-                 'net.ipv6.conf.default.disable_ipv6': 0,
-                 'net.ipv6.conf.all.disable_ipv6': 0
-                 },
+        sysctls=sysctls,
         environment={'KATHARA_UML_IFACES': '0'},
         mem_limit='64m',
         nano_cpus=2000000000,
@@ -2179,7 +2179,7 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
     )
 
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar())
+                                            uml_helpers_tar(sysctls))
 
 
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
@@ -2276,6 +2276,47 @@ def test_create_with_kernel_through_link(mock_get_current_user_name, mock_settin
     docker_machine.create(device)
     assert docker_machine.client.containers.create.call_args.kwargs['volumes'] == \
            {str(kernel): {'bind': '/kathara-uml-kernel', 'mode': 'ro'}}
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_sysctls(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                    mock_get_machines_api_objects_by_filters, docker_machine, default_device,
+                                    tmp_path):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    kernel = tmp_path / "linux"
+    kernel.write_bytes(b"uml")
+    default_device.add_meta("kernel", str(kernel))
+    default_device.add_meta("sysctl", "net.ipv4.tcp_syncookies=0")
+    default_device.add_meta("sysctl", "net.ipv4.conf.eth1.rp_filter=2")
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': False,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    docker_machine.create(default_device)
+
+    # Docker Engine 27 takes the interface sysctls as driver options, not with the container: the UML kernel
+    # gets them all from sysctl.conf.
+    container_sysctls = docker_machine.client.containers.create.call_args.kwargs['sysctls']
+    assert 'net.ipv4.conf.eth1.rp_filter' not in container_sysctls
+    uml_sysctls = {**container_sysctls, 'net.ipv4.conf.eth1.rp_filter': 2}
+    assert uml_sysctls['net.ipv4.tcp_syncookies'] == 0
+    assert uml_sysctls['net.ipv4.ip_forward'] == 1
+    assert uml_sysctls['net.ipv6.conf.all.disable_ipv6'] == 1
+    mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
+                                            uml_helpers_tar(uml_sysctls))
 
 
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):

@@ -296,6 +296,8 @@ class DockerMachine(object):
 
         # Merge machine sysctls
         sysctl_parameters = {**sysctl_parameters, **machine.meta['sysctls'], **sysctl_first_interface}
+        # A UML device applies all of them, the interface ones included, inside its own kernel
+        uml_sysctls = dict(sysctl_parameters)
         # Remove interface-related sysctls on newer Docker Engine versions (these are added as driver_opts)
         if version_gte(self._engine_version, "27.0.0"):
             sysctl_parameters = dict(filter(lambda x: not IFACE_SYSCTL_RE.match(x[0]), sysctl_parameters.items()))
@@ -414,7 +416,7 @@ class DockerMachine(object):
             self.copy_files(machine_container, "/", tar_data)
 
         if uml_kernel:
-            self.copy_files(machine_container, "/", uml_helpers_tar())
+            self.copy_files(machine_container, "/", uml_helpers_tar(uml_sysctls))
 
         machine.api_object = machine_container
 

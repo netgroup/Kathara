@@ -1,9 +1,11 @@
 import io
 import tarfile
+from typing import Dict, Union
 
 # Scripts that a device with its own UML kernel (lab.conf: dev[kernel]="/path/to/linux") runs. They are copied into
 # the container at creation, in /kathara-uml: start is the entrypoint of the container, init the PID 1 of the UML,
-# ushell the shell of the device (startup, exec and connect go into the UML through it).
+# ushell the shell of the device (startup, exec and connect go into the UML through it). With them goes
+# sysctl.conf, the sysctls that Kathara gives the container, which init applies to the UML kernel.
 
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
@@ -15,6 +17,9 @@ START = r"""#!/bin/bash
 # KATHARA_UML_SECCOMP (dev[env]) is the seccomp= option of UML: auto (the
 # default here) uses the seccomp mode where it works and falls back to
 # ptrace (the kernel default, off); the console log says which one ran.
+# Each UML interface takes the MAC address that Kathara gave the interface
+# of the container. The memory of the UML is KATHARA_UML_MEM, else three
+# quarters of the memory limit of the container, else 256M.
 
 KEY=/var/lib/kathara-uml/id
 UML_TMP=/tmp/uml
@@ -32,15 +37,58 @@ wait_for_interfaces()
 	done
 }
 
+# A random locally administered unicast MAC address.
+random_mac()
+{
+	printf '02:%02x:%02x:%02x:%02x:%02x\n' $((RANDOM % 256)) $((RANDOM % 256)) \
+		$((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256))
+}
+
+# Prints the MAC address of an interface of the container, the one Kathara
+# gave it, for the UML, and gives the interface a random one: the stack of
+# the container then takes the frames for the UML as not its own.
+take_mac()
+{
+	local ifc=$1
+
+	cat "/sys/class/net/$ifc/address"
+	ip link set "$ifc" down
+	ip link set "$ifc" address "$(random_mac)"
+}
+
 # Hands an interface of the container over to the UML: up, without IPv6,
-# and a vector raw interface vecN on it in the boot options.
+# and a vector raw interface vecN on it in the boot options, with the MAC
+# address mac if given.
 add_vector()
 {
-	local n=$1 ifc=$2
+	local n=$1 ifc=$2 mac=$3 option
 
+	option="vec$n:transport=raw,ifname=$ifc,depth=128,gro=1"
+	if [ -n "$mac" ]; then
+		option+=",mac=$mac"
+	fi
 	sysctl -wq "net.ipv6.conf.$ifc.disable_ipv6=1" 2>/dev/null
 	ip link set "$ifc" up
-	vectors+=("vec$n:transport=raw,ifname=$ifc,depth=128,gro=1")
+	vectors+=("$option")
+}
+
+# The memory of the UML: KATHARA_UML_MEM, else three quarters of the memory
+# limit of the container (cgroup v2), the rest left to UML itself, else
+# 256M.
+uml_memory()
+{
+	local limit
+
+	if [ -n "$KATHARA_UML_MEM" ]; then
+		echo "$KATHARA_UML_MEM"
+		return
+	fi
+	limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+	if [[ $limit =~ ^[0-9]+$ ]]; then
+		echo "$((limit * 3 / 4 / 1048576))M"
+	else
+		echo 256M
+	fi
 }
 
 # The key of ushell, made first: Kathara may run the startup through
@@ -64,14 +112,15 @@ ip addr add 169.254.77.1/30 dev um0
 vectors=()
 n=${KATHARA_UML_IFACES:-0}
 for ((k = 0; k < n; k++)); do
-	add_vector "$k" "eth$k"
+	add_vector "$k" "eth$k" "$(take_mac "eth$k")"
 done
 add_vector "$n" um1
 ip link set um0 up
 
 seccomp=${KATHARA_UML_SECCOMP:-auto}
+mem=$(uml_memory)
 ifaces=(/sys/class/net/*)
-echo "start: ${ifaces[*]##*/} -> ${vectors[*]} seccomp=$seccomp" > /var/log/uml-start.log
+echo "start: ${ifaces[*]##*/} -> ${vectors[*]} seccomp=$seccomp mem=$mem" > /var/log/uml-start.log
 
 # The stdin of the console: a FIFO that sleep keeps open.
 mkdir -p "$UML_TMP"
@@ -79,7 +128,7 @@ rm -f "$CONSOLE_IN"
 mkfifo "$CONSOLE_IN"
 sleep infinity > "$CONSOLE_IN" &
 
-exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="${KATHARA_UML_MEM:-256M}" \
+exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="$mem" \
 	root=/dev/root rootfstype=hostfs rootflags=/ rw init=/kathara-uml/init \
 	con0=fd:0,fd:1 con=null seccomp="$seccomp" "${vectors[@]}" \
 	< "$CONSOLE_IN" > /var/log/uml-console.log 2>&1
@@ -87,11 +136,14 @@ exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="${KATHARA_UML_MEM:-256M}" \
 
 INIT = r"""#!/bin/bash
 # Kathara UML device, PID 1 inside the UML: mounts, the interfaces named
-# as Kathara names them (vecK -> ethK, the last one -> kmgmt), sshd for
-# /kathara-uml/ushell, then a status file the container can read.
+# as Kathara names them (vecK -> ethK, the last one -> kmgmt), the sysctls
+# of the device, sshd for /kathara-uml/ushell, then a status file the
+# container can read.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 STATUS=/var/tmp/uml-status
+SYSCTLS=/kathara-uml/sysctl.conf
+SYSCTL_LOG=/var/log/uml-sysctl.log
 
 mount_filesystems()
 {
@@ -120,6 +172,25 @@ name_interfaces()
 	ip link set kmgmt up
 }
 
+# The sysctls that Kathara gives a device container, which it writes in
+# sysctl.conf, one name=value per line: applied to the UML kernel, after
+# the interfaces have their names. The log lists the ones that the UML
+# kernel refuses, for example because it lacks them.
+apply_sysctls()
+{
+	local setting
+
+	: > "$SYSCTL_LOG"
+	if [ ! -f "$SYSCTLS" ]; then
+		return
+	fi
+	while read -r setting; do
+		if ! sysctl -q -w "$setting" 2>> "$SYSCTL_LOG"; then
+			echo "not applied: $setting" >> "$SYSCTL_LOG"
+		fi
+	done < "$SYSCTLS"
+}
+
 write_status()
 {
 	{
@@ -134,6 +205,7 @@ mount_filesystems
 hostname "$(cat /etc/hostname 2>/dev/null || echo uml)"
 ip link set lo up
 name_interfaces
+apply_sysctls
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -o ListenAddress=169.254.77.2 -o UseDNS=no -o PermitRootLogin=prohibit-password
@@ -181,8 +253,23 @@ exec "${SSH[@]}" -t
 """
 
 
-def uml_helpers_tar() -> bytes:
-    """Return a tar archive with the UML helpers in kathara-uml/, executable, to be extracted in `/`.
+def uml_sysctl_conf(sysctls: Dict[str, Union[int, str]]) -> str:
+    """Return the sysctls of a device in the format that init reads: one name=value per line, sorted by name.
+
+    Args:
+        sysctls (Dict[str, Union[int, str]]): The sysctls of the device.
+
+    Returns:
+        str: The content of sysctl.conf.
+    """
+    return "".join(f"{name}={value}\n" for name, value in sorted(sysctls.items()))
+
+
+def uml_helpers_tar(sysctls: Dict[str, Union[int, str]]) -> bytes:
+    """Return a tar archive with the UML helpers in kathara-uml/, executable, and sysctl.conf, to be extracted in `/`.
+
+    Args:
+        sysctls (Dict[str, Union[int, str]]): The sysctls that init applies to the UML kernel.
 
     Returns:
         bytes: The tar archive.
@@ -193,10 +280,12 @@ def uml_helpers_tar() -> bytes:
         directory.type = tarfile.DIRTYPE
         directory.mode = 0o755
         tar.addfile(directory)
-        for name, content in (("start", START), ("init", INIT), ("ushell", USHELL)):
+        files = (("start", START, 0o755), ("init", INIT, 0o755), ("ushell", USHELL, 0o755),
+                 ("sysctl.conf", uml_sysctl_conf(sysctls), 0o644))
+        for name, content, mode in files:
             encoded = content.encode("utf-8")
             info = tarfile.TarInfo("kathara-uml/" + name)
             info.size = len(encoded)
-            info.mode = 0o755
+            info.mode = mode
             tar.addfile(info, io.BytesIO(encoded))
     return data.getvalue()
