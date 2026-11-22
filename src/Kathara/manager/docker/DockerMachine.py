@@ -18,7 +18,7 @@ from docker.types import Ulimit
 from docker.utils import version_lt, version_gte
 
 from .DockerImage import DockerImage
-from .UmlHelpers import UmlSettings, uml_helpers_tar
+from .UmlHelpers import UmlSettings, uml_helpers_tar, uml_kernel_error
 from .exec_stream.DockerExecStream import DockerExecStream
 from .stats.DockerMachineStats import DockerMachineStats
 from ... import utils
@@ -341,6 +341,10 @@ class DockerMachine(object):
             uml_kernel = os.path.realpath(uml_kernel)
             if not os.path.isfile(uml_kernel):
                 raise MachineOptionError(f"UML kernel `{uml_kernel}` of device `{machine.name}` not found.")
+            # A file that is not a UML kernel for this host is refused before the container is created, with the reason.
+            uml_error = uml_kernel_error(uml_kernel, utils.get_architecture())
+            if uml_error:
+                raise MachineOptionError(f"Device `{machine.name}` cannot run on `{uml_kernel}`: {uml_error}.")
             # The UML kernel is the main process of the container: its entrypoint is taken.
             if "entrypoint" in machine.meta or machine.meta.get("args"):
                 raise MachineOptionError(

@@ -1,6 +1,7 @@
 import io
+import struct
 import tarfile
-from typing import Dict, Union
+from typing import BinaryIO, Dict, Optional, Set, Tuple, Union
 
 # Scripts that a device with its own UML kernel (lab.conf: dev[kernel]="/path/to/linux") runs. They are copied into
 # the container at creation, in /kathara-uml: start is the entrypoint of the container, init the PID 1 of the UML,
@@ -485,3 +486,99 @@ def uml_helpers_tar(settings: UmlSettings) -> bytes:
             info.mode = mode
             tar.addfile(info, io.BytesIO(encoded))
     return data.getvalue()
+
+
+# The ELF header and section header of a 32 and a 64 bit ELF file, by ELF class (Elf32_Ehdr, Elf64_Ehdr,
+# Elf32_Shdr and Elf64_Shdr in elf.h), little endian as on x86.
+ELF_MAGIC = b"\x7fELF"
+ELF_DATA_LSB = 1
+ELF_HEADERS = {1: "<16sHHIIIIIHHHHHH", 2: "<16sHHIQQQIHHHHHH"}
+ELF_SECTION_HEADERS = {1: "<IIIIIIIIII", 2: "<IIQQQQIIQQ"}
+# The host architectures, as utils.get_architecture() names them, that UML runs on, by the ELF class and machine of
+# their kernel: UML is built only for x86 hosts (arch/x86/um in the Linux tree).
+UML_ARCHITECTURES = {(2, 62): "amd64", (1, 3): "386"}
+# The section of the UML command line options (__uml_setup): every UML kernel has it, a kernel for real hardware
+# does not (arch/um/include/asm/common.lds.S in the Linux tree).
+UML_SECTION = b".uml.setup.init"
+# A Linux kernel boot image (bzImage) has "HdrS" at 0x202 (arch/x86/boot/header.S in the Linux tree).
+BZIMAGE_MAGIC_OFFSET = 0x202
+BZIMAGE_MAGIC = b"HdrS"
+
+
+def read_exactly(file: BinaryIO, offset: int, size: int) -> bytes:
+    """Return the size bytes of a file at offset.
+
+    Args:
+        file (BinaryIO): The file, open in binary mode.
+        offset (int): The offset of the bytes.
+        size (int): How many bytes.
+
+    Returns:
+        bytes: The bytes.
+
+    Raises:
+        ValueError: If the file ends before.
+    """
+    file.seek(offset)
+    data = file.read(size)
+    if len(data) < size:
+        raise ValueError(f"file ends before {offset + size} bytes")
+    return data
+
+
+def elf_sections(file: BinaryIO) -> Optional[Tuple[int, int, Set[bytes]]]:
+    """Return the ELF class, the machine and the section names of a little endian ELF file.
+
+    Args:
+        file (BinaryIO): The file, open in binary mode.
+
+    Returns:
+        Optional[Tuple[int, int, Set[bytes]]]: The ELF class, the machine and the section names, or None if the file
+            is not a little endian ELF file or its section headers cannot be read.
+    """
+    try:
+        ident = read_exactly(file, 0, 6)
+        if ident[:4] != ELF_MAGIC or ident[4] not in ELF_HEADERS or ident[5] != ELF_DATA_LSB:
+            return None
+        elf_class = ident[4]
+        header_format, section_format = ELF_HEADERS[elf_class], ELF_SECTION_HEADERS[elf_class]
+        section_size = struct.calcsize(section_format)
+
+        header = struct.unpack(header_format, read_exactly(file, 0, struct.calcsize(header_format)))
+        machine, shoff, shentsize, shnum, shstrndx = header[2], header[6], header[11], header[12], header[13]
+        if shentsize < section_size or shstrndx >= shnum:
+            return None
+        # sh_name, sh_offset and sh_size are the fields 0, 4 and 5 of a section header, in both classes.
+        sections = [struct.unpack(section_format, read_exactly(file, shoff + index * shentsize, section_size))
+                    for index in range(shnum)]
+        names = read_exactly(file, sections[shstrndx][4], sections[shstrndx][5])
+        return elf_class, machine, {names[section[0]:names.index(b"\0", section[0])] for section in sections}
+    except ValueError:
+        return None
+
+
+def uml_kernel_error(path: str, host_arch: str) -> Optional[str]:
+    """Return why a file cannot be the UML kernel of a device on this host.
+
+    Args:
+        path (str): The path of the file.
+        host_arch (str): The architecture of the host, as utils.get_architecture() names it.
+
+    Returns:
+        Optional[str]: Why the file cannot be the UML kernel, or None if it can.
+    """
+    if host_arch not in UML_ARCHITECTURES.values():
+        return f"UML runs only on x86 hosts, this host is `{host_arch}`"
+    with open(path, "rb") as file:
+        elf = elf_sections(file)
+        file.seek(BZIMAGE_MAGIC_OFFSET)
+        bzimage = file.read(len(BZIMAGE_MAGIC)) == BZIMAGE_MAGIC
+    if elf is None and bzimage:
+        return "it is a kernel boot image (bzImage), not a UML kernel: build the kernel with ARCH=um"
+    if elf is None or UML_SECTION not in elf[2]:
+        return "it is not a UML kernel: build the kernel with ARCH=um"
+    elf_class, machine, _ = elf
+    kernel_arch = UML_ARCHITECTURES.get((elf_class, machine), f"ELF machine {machine}")
+    if kernel_arch != host_arch:
+        return f"it is a UML kernel for `{kernel_arch}`, this host is `{host_arch}`"
+    return None

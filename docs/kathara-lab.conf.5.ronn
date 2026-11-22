@@ -103,7 +103,8 @@ If `arg` is an option name, then `device` will be launched with option `arg` set
 	mode of UML: auto (default), on or off. The UML kernel gets the sysctls of the device and the MAC addresses of
 	its interfaces, the bridged interface with its address and route when `bridged` is set, its processes get its
 	ulimits, and the startup, `exec` and `connect` get its environment variables and run in its shell. The UML kernel is the entrypoint of the container, so `entrypoint` and `args` cannot be used
-	with `kernel`: start programs from the startup file of the device.
+	with `kernel`: start programs from the startup file of the device. The file must be a UML kernel (built with
+	`ARCH=um`) for the architecture of the host, and UML runs only on x86 hosts: any other file is refused.
 	NOTE: Only with the Docker manager.
 
 
