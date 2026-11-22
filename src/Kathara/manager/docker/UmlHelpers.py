@@ -29,6 +29,10 @@ START = r"""#!/bin/bash
 
 KEY=/var/lib/kathara-uml/id
 BRIDGED_CONF=/var/lib/kathara-uml/bridged.conf
+# The management link: link-local, in a range a lab does not use, and
+# reserved in a UML device, whose stack holds it next to the interfaces of
+# the lab. The same in init and ushell.
+MGMT_CONTAINER=169.254.77.1/30
 UML_TMP=/tmp/uml
 CONSOLE_IN=$UML_TMP/stdin
 
@@ -139,7 +143,7 @@ unmount_docker_files
 wait_for_interfaces
 
 ip link add um0 type veth peer name um1
-ip addr add 169.254.77.1/30 dev um0
+ip addr add "$MGMT_CONTAINER" dev um0
 
 vectors=()
 n=${KATHARA_UML_IFACES:-0}
@@ -181,6 +185,8 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 STATUS=/var/tmp/uml-status
 BRIDGED_CONF=/var/lib/kathara-uml/bridged.conf
+# The management link, as in start and ushell.
+MGMT_UML=169.254.77.2
 SYSCTLS=/kathara-uml/sysctl.conf
 SYSCTL_LOG=/var/log/uml-sysctl.log
 ULIMITS=/kathara-uml/ulimit.conf
@@ -215,7 +221,7 @@ name_interfaces()
 		ip link set "eth$k" up
 	done
 	ip link set "vec$((n - 1))" name kmgmt
-	ip addr add 169.254.77.2/30 dev kmgmt
+	ip addr add "$MGMT_UML/30" dev kmgmt
 	ip link set kmgmt up
 }
 
@@ -305,7 +311,7 @@ apply_ulimits
 # Without PAM, as docker exec runs a command in a container: pam_limits of
 # the session would reset the ulimits that init has set.
 mkdir -p /run/sshd
-/usr/sbin/sshd -o ListenAddress=169.254.77.2 -o UseDNS=no -o PermitRootLogin=prohibit-password -o UsePAM=no
+/usr/sbin/sshd -o ListenAddress="$MGMT_UML" -o UseDNS=no -o PermitRootLogin=prohibit-password -o UsePAM=no
 
 while true; do
 	write_status
@@ -324,12 +330,14 @@ USHELL = r"""#!/bin/bash
 # bounds each connect and the ssh banner exchange.
 
 KEY=/var/lib/kathara-uml/id
+# The management link, as in start and init.
+MGMT_UML=169.254.77.2
 ENVIRONMENT=/kathara-uml/environment
 SHELL_FILE=/kathara-uml/shell
 SSH=(ssh -q -i "$KEY"
 	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
 	-o ConnectionAttempts=120 -o ConnectTimeout=10
-	root@169.254.77.2)
+	"root@$MGMT_UML")
 
 # start, the entrypoint of the container, makes the key when it begins,
 # and a startup that Kathara runs right away may get here first. Waits

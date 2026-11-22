@@ -29,6 +29,13 @@ def test_uml_helpers_tar():
     assert tar.extractfile('kathara-uml/ulimit.conf').read().decode('utf-8') == 'nofile 1024 2048\n'
 
 
+def test_uml_helpers_management_link():
+    # start puts the container end, init and ushell the UML end, of the same /30.
+    assert 'MGMT_CONTAINER=169.254.77.1/30\n' in START
+    assert 'MGMT_UML=169.254.77.2\n' in INIT
+    assert 'MGMT_UML=169.254.77.2\n' in USHELL
+
+
 def test_uml_sysctl_conf():
     assert uml_sysctl_conf({'net.ipv6.conf.all.disable_ipv6': 1, 'net.ipv4.conf.eth1.rp_filter': 2}) == \
            'net.ipv4.conf.eth1.rp_filter=2\nnet.ipv6.conf.all.disable_ipv6=1\n'
