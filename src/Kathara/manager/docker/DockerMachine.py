@@ -419,7 +419,8 @@ class DockerMachine(object):
 
         if uml_kernel:
             self.copy_files(machine_container, "/", uml_helpers_tar(
-                UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'], shell=uml_shell)
+                UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'], shell=uml_shell,
+                            ulimits=machine.get_ulimits())
             ))
 
         machine.api_object = machine_container

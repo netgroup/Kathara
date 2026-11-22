@@ -6,8 +6,9 @@ from typing import Dict, Union
 # the container at creation, in /kathara-uml: start is the entrypoint of the container, init the PID 1 of the UML,
 # ushell the shell of the device (startup, exec and connect go into the UML through it). With them go the settings
 # of the device (UmlSettings): sysctl.conf, the sysctls that Kathara gives the container, which init applies to the
-# UML kernel, environment, the variables of the device, which ushell exports in the UML, and shell, the shell of the
-# device, in which ushell runs the commands and which connect opens.
+# UML kernel, environment, the variables of the device, which ushell exports in the UML, shell, the shell of the
+# device, in which ushell runs the commands and which connect opens, and ulimit.conf, the ulimits of the device,
+# which init sets before it starts sshd.
 
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
@@ -139,13 +140,15 @@ exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="$mem" \
 INIT = r"""#!/bin/bash
 # Kathara UML device, PID 1 inside the UML: mounts, the interfaces named
 # as Kathara names them (vecK -> ethK, the last one -> kmgmt), the sysctls
-# of the device, sshd for /kathara-uml/ushell, then a status file the
-# container can read.
+# and the ulimits of the device, sshd for /kathara-uml/ushell, then a
+# status file the container can read.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 STATUS=/var/tmp/uml-status
 SYSCTLS=/kathara-uml/sysctl.conf
 SYSCTL_LOG=/var/log/uml-sysctl.log
+ULIMITS=/kathara-uml/ulimit.conf
+ULIMIT_LOG=/var/log/uml-ulimit.log
 
 mount_filesystems()
 {
@@ -193,6 +196,25 @@ apply_sysctls()
 	done < "$SYSCTLS"
 }
 
+# The ulimits of the device, which Kathara writes in ulimit.conf, one
+# "name soft hard" per line: set on init with prlimit before it starts
+# sshd, so that every process of the UML inherits them. The log lists the
+# ones that cannot be set.
+apply_ulimits()
+{
+	local name soft hard
+
+	: > "$ULIMIT_LOG"
+	if [ ! -f "$ULIMITS" ]; then
+		return
+	fi
+	while read -r name soft hard; do
+		if ! prlimit --pid $$ "--$name=$soft:$hard" 2>> "$ULIMIT_LOG"; then
+			echo "not applied: $name $soft $hard" >> "$ULIMIT_LOG"
+		fi
+	done < "$ULIMITS"
+}
+
 write_status()
 {
 	{
@@ -208,9 +230,12 @@ hostname "$(cat /etc/hostname 2>/dev/null || echo uml)"
 ip link set lo up
 name_interfaces
 apply_sysctls
+apply_ulimits
 
+# Without PAM, as docker exec runs a command in a container: pam_limits of
+# the session would reset the ulimits that init has set.
 mkdir -p /run/sshd
-/usr/sbin/sshd -o ListenAddress=169.254.77.2 -o UseDNS=no -o PermitRootLogin=prohibit-password
+/usr/sbin/sshd -o ListenAddress=169.254.77.2 -o UseDNS=no -o PermitRootLogin=prohibit-password -o UsePAM=no
 
 while true; do
 	write_status
@@ -319,13 +344,16 @@ class UmlSettings(object):
             included.
         envs (Dict[str, str]): The environment variables of the device.
         shell (str): The shell of the device: its shell option, else the device_shell setting.
+        ulimits (Dict[str, Dict[str, int]]): The ulimits of the device, as soft and hard limit by name.
     """
-    __slots__ = ['sysctls', 'envs', 'shell']
+    __slots__ = ['sysctls', 'envs', 'shell', 'ulimits']
 
-    def __init__(self, sysctls: Dict[str, Union[int, str]], envs: Dict[str, str], shell: str) -> None:
+    def __init__(self, sysctls: Dict[str, Union[int, str]], envs: Dict[str, str], shell: str,
+                 ulimits: Dict[str, Dict[str, int]]) -> None:
         self.sysctls: Dict[str, Union[int, str]] = sysctls
         self.envs: Dict[str, str] = envs
         self.shell: str = shell
+        self.ulimits: Dict[str, Dict[str, int]] = ulimits
 
     def files(self) -> Dict[str, str]:
         """Return the files that carry the settings into the container, by their name in /kathara-uml.
@@ -334,7 +362,24 @@ class UmlSettings(object):
             Dict[str, str]: The content of each file.
         """
         return {"sysctl.conf": uml_sysctl_conf(self.sysctls), "environment": uml_environment(self.envs),
-                "shell": f"{self.shell}\n"}
+                "shell": f"{self.shell}\n", "ulimit.conf": uml_ulimit_conf(self.ulimits)}
+
+
+def uml_ulimit_conf(ulimits: Dict[str, Dict[str, int]]) -> str:
+    """Return the ulimits of a device in the format that init reads: one "name soft hard" per line, sorted by name,
+    with -1 written as unlimited.
+
+    Args:
+        ulimits (Dict[str, Dict[str, int]]): The ulimits of the device, as soft and hard limit by name.
+
+    Returns:
+        str: The content of ulimit.conf.
+    """
+    def limit(value: int) -> str:
+        return "unlimited" if value == -1 else str(value)
+
+    return "".join(f"{name} {limit(values['soft'])} {limit(values['hard'])}\n"
+                   for name, values in sorted(ulimits.items()))
 
 
 def uml_helpers_tar(settings: UmlSettings) -> bytes:
