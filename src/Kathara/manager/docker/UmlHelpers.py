@@ -28,6 +28,16 @@ KEY=/var/lib/kathara-uml/id
 UML_TMP=/tmp/uml
 CONSOLE_IN=$UML_TMP/stdin
 
+# Docker mounts /etc/hosts and /etc/resolv.conf in a container, and the
+# startup of Kathara unmounts them first, so that it finds the files of
+# the image. That startup runs inside the UML, where they are not mounts:
+# unmount them here, in the container, before the UML boots.
+unmount_docker_files()
+{
+	umount /etc/resolv.conf 2>/dev/null
+	umount /etc/hosts 2>/dev/null
+}
+
 # Kathara attaches the interfaces after the first one once the container
 # runs, then touches the ready file. Waits for it up to 60 s.
 wait_for_interfaces()
@@ -107,6 +117,7 @@ make_key()
 }
 
 make_key
+unmount_docker_files
 wait_for_interfaces
 
 ip link add um0 type veth peer name um1

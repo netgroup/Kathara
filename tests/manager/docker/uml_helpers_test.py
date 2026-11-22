@@ -55,4 +55,5 @@ def test_uml_helpers_scripts():
     assert '/run/kathara-uml.ready' in START
     assert '-o ConnectionAttempts=120' in USHELL
     assert ',mac=$mac' in START
+    assert 'umount /etc/resolv.conf' in START and 'umount /etc/hosts' in START
     assert 'apply_sysctls' in INIT
