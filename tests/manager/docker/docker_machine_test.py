@@ -2327,6 +2327,38 @@ def test_create_with_kernel_settings(mock_get_current_user_name, mock_setting_ge
     ))
 
 
+@pytest.mark.parametrize("option,value", [("entrypoint", "/usr/sbin/mydaemon"), ("args", "--config /etc/my.conf")])
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_and_entrypoint(mock_get_current_user_name, mock_setting_get_instance,
+                                           mock_get_machines_api_objects_by_filters, docker_machine,
+                                           default_device, tmp_path, option, value):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    kernel = tmp_path / "linux"
+    kernel.write_bytes(b"uml")
+    default_device.add_meta("kernel", str(kernel))
+    default_device.add_meta(option, value)
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    with pytest.raises(MachineOptionError):
+        docker_machine.create(default_device)
+
+    assert not docker_machine.client.containers.create.called
+
+
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):
     default_device.add_interface(default_link)
     default_device.add_interface(default_link_b)

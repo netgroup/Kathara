@@ -341,6 +341,13 @@ class DockerMachine(object):
             uml_kernel = os.path.realpath(uml_kernel)
             if not os.path.isfile(uml_kernel):
                 raise MachineOptionError(f"UML kernel `{uml_kernel}` of device `{machine.name}` not found.")
+            # The UML kernel is the main process of the container: its entrypoint is taken.
+            if "entrypoint" in machine.meta or machine.meta.get("args"):
+                raise MachineOptionError(
+                    f"Device `{machine.name}` runs on a UML kernel, which is the entrypoint of its container: "
+                    f"the entrypoint and args options cannot be used with kernel. Start programs from the "
+                    f"startup file of the device instead."
+                )
             logging.debug(f"Device `{machine.name}` runs on UML kernel `{uml_kernel}`...")
             volumes[uml_kernel] = {'bind': '/kathara-uml-kernel', 'mode': 'ro'}
             environment = dict(environment, KATHARA_UML_IFACES=str(len(machine.interfaces)))
