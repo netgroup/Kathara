@@ -351,6 +351,8 @@ class DockerMachine(object):
             logging.debug(f"Device `{machine.name}` runs on UML kernel `{uml_kernel}`...")
             volumes[uml_kernel] = {'bind': '/kathara-uml-kernel', 'mode': 'ro'}
             environment = dict(environment, KATHARA_UML_IFACES=str(len(machine.interfaces)))
+            if machine.is_bridged():
+                environment["KATHARA_UML_BRIDGED_IFACE"] = str(machine.meta["bridged_iface"])
 
         privileged = machine.is_privileged()
         if privileged and not utils.is_admin():

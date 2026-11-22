@@ -56,4 +56,5 @@ def test_uml_helpers_scripts():
     assert '-o ConnectionAttempts=120' in USHELL
     assert ',mac=$mac' in START
     assert 'umount /etc/resolv.conf' in START and 'umount /etc/hosts' in START
+    assert 'take_bridged_config "$bridged"' in START and 'configure_bridged' in INIT
     assert 'apply_sysctls' in INIT

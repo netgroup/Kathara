@@ -21,10 +21,14 @@ START = r"""#!/bin/bash
 # default here) uses the seccomp mode where it works and falls back to
 # ptrace (the kernel default, off); the console log says which one ran.
 # Each UML interface takes the MAC address that Kathara gave the interface
-# of the container. The memory of the UML is KATHARA_UML_MEM, else three
-# quarters of the memory limit of the container, else 256M.
+# of the container. The bridged interface of the device, if any
+# (KATHARA_UML_BRIDGED_IFACE), goes to the UML too, with the address and
+# the default route that Docker gave it. The memory of the UML is
+# KATHARA_UML_MEM, else three quarters of the memory limit of the
+# container, else 256M.
 
 KEY=/var/lib/kathara-uml/id
+BRIDGED_CONF=/var/lib/kathara-uml/bridged.conf
 UML_TMP=/tmp/uml
 CONSOLE_IN=$UML_TMP/stdin
 
@@ -85,6 +89,20 @@ add_vector()
 	vectors+=("$option")
 }
 
+# Moves the IPv4 address and the default route that Docker gave the bridged
+# interface of the container to BRIDGED_CONF, which init reads: only the
+# UML must answer on that address.
+take_bridged_config()
+{
+	local ifc=$1 address gateway
+
+	address=$(ip -o -4 addr show dev "$ifc" | awk '{ print $4 }')
+	gateway=$(ip -4 route show default dev "$ifc" | awk '{ print $3 }')
+	printf 'ifname=%s\naddress=%s\ngateway=%s\n' "$ifc" "$address" "$gateway" > "$BRIDGED_CONF"
+	ip -4 route flush dev "$ifc"
+	ip -4 addr flush dev "$ifc"
+}
+
 # The memory of the UML: KATHARA_UML_MEM, else three quarters of the memory
 # limit of the container (cgroup v2), the rest left to UML itself, else
 # 256M.
@@ -128,7 +146,13 @@ n=${KATHARA_UML_IFACES:-0}
 for ((k = 0; k < n; k++)); do
 	add_vector "$k" "eth$k" "$(take_mac "eth$k")"
 done
-add_vector "$n" um1
+rm -f "$BRIDGED_CONF"
+if [ -n "$KATHARA_UML_BRIDGED_IFACE" ]; then
+	bridged=eth$KATHARA_UML_BRIDGED_IFACE
+	take_bridged_config "$bridged"
+	add_vector "${#vectors[@]}" "$bridged" "$(take_mac "$bridged")"
+fi
+add_vector "${#vectors[@]}" um1
 ip link set um0 up
 
 seccomp=${KATHARA_UML_SECCOMP:-auto}
@@ -156,6 +180,7 @@ INIT = r"""#!/bin/bash
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 STATUS=/var/tmp/uml-status
+BRIDGED_CONF=/var/lib/kathara-uml/bridged.conf
 SYSCTLS=/kathara-uml/sysctl.conf
 SYSCTL_LOG=/var/log/uml-sysctl.log
 ULIMITS=/kathara-uml/ulimit.conf
@@ -192,6 +217,33 @@ name_interfaces()
 	ip link set "vec$((n - 1))" name kmgmt
 	ip addr add 169.254.77.2/30 dev kmgmt
 	ip link set kmgmt up
+}
+
+# The address and the default route that Docker gave the bridged interface
+# of the container, which start moved to BRIDGED_CONF, one key=value per
+# line: set on the same interface of the UML.
+configure_bridged()
+{
+	local key value ifname address gateway
+
+	if [ ! -f "$BRIDGED_CONF" ]; then
+		return
+	fi
+	while IFS='=' read -r key value; do
+		case "$key" in
+		ifname)
+			ifname=$value
+			;;
+		address)
+			address=$value
+			;;
+		gateway)
+			gateway=$value
+			;;
+		esac
+	done < "$BRIDGED_CONF"
+	ip addr add "$address" dev "$ifname"
+	ip route add default via "$gateway" dev "$ifname"
 }
 
 # The sysctls that Kathara gives a device container, which it writes in
@@ -246,6 +298,7 @@ mount_filesystems
 hostname "$(cat /etc/hostname 2>/dev/null || echo uml)"
 ip link set lo up
 name_interfaces
+configure_bridged
 apply_sysctls
 apply_ulimits
 

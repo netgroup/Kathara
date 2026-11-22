@@ -2327,6 +2327,39 @@ def test_create_with_kernel_settings(mock_get_current_user_name, mock_setting_ge
     ))
 
 
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_bridged(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                    mock_get_machines_api_objects_by_filters, docker_machine, default_device,
+                                    tmp_path):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+
+    kernel = tmp_path / "linux"
+    kernel.write_bytes(b"uml")
+    default_device.add_meta("kernel", str(kernel))
+    default_device.add_meta("bridged", True)
+
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    mock_setting_get_instance.return_value = setting_mock
+    docker_machine.create(default_device)
+
+    # The bridged interface of a device with no other interface is eth0: start hands it to the UML.
+    assert docker_machine.client.containers.create.call_args.kwargs['environment'] == \
+           {'KATHARA_UML_IFACES': '0', 'KATHARA_UML_BRIDGED_IFACE': '0'}
+
+
 @pytest.mark.parametrize("option,value", [("entrypoint", "/usr/sbin/mydaemon"), ("args", "--config /etc/my.conf")])
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
