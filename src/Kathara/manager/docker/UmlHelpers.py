@@ -161,14 +161,20 @@ SYSCTL_LOG=/var/log/uml-sysctl.log
 ULIMITS=/kathara-uml/ulimit.conf
 ULIMIT_LOG=/var/log/uml-ulimit.log
 
+# The filesystems that Docker mounts in a container, with its options,
+# from the kernel of the UML; /dev with the devices of that kernel. The
+# rest of / is the container's own, through hostfs: /run, /etc/hostname,
+# /shared, the volumes.
 mount_filesystems()
 {
 	mount -t proc proc /proc
 	mount -t sysfs sysfs /sys
 	mount -t devtmpfs devtmpfs /dev 2>/dev/null
-	mkdir -p /dev/pts
+	mkdir -p /dev/pts /dev/shm /dev/mqueue
 	mount -t devpts devpts /dev/pts
-	mount -t tmpfs tmpfs /run
+	mount -t tmpfs -o nosuid,nodev,noexec,size=65536k shm /dev/shm
+	mount -t mqueue -o nosuid,nodev,noexec mqueue /dev/mqueue
+	mount -t cgroup2 -o ro,nosuid,nodev,noexec cgroup /sys/fs/cgroup
 	mount -t bpf bpf /sys/fs/bpf
 }
 
