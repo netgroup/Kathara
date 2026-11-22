@@ -2179,7 +2179,7 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
     )
 
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(UmlSettings(sysctls=sysctls)))
+                                            uml_helpers_tar(UmlSettings(sysctls=sysctls, envs={})))
 
 
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
@@ -2282,7 +2282,7 @@ def test_create_with_kernel_through_link(mock_get_current_user_name, mock_settin
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.utils.get_current_user_name")
-def test_create_with_kernel_sysctls(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+def test_create_with_kernel_settings(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
                                     mock_get_machines_api_objects_by_filters, docker_machine, default_device,
                                     tmp_path):
     mock_get_machines_api_objects_by_filters.return_value = []
@@ -2293,6 +2293,7 @@ def test_create_with_kernel_sysctls(mock_get_current_user_name, mock_setting_get
     default_device.add_meta("kernel", str(kernel))
     default_device.add_meta("sysctl", "net.ipv4.tcp_syncookies=0")
     default_device.add_meta("sysctl", "net.ipv4.conf.eth1.rp_filter=2")
+    default_device.add_meta("env", "GREETING=hello world")
 
     setting_mock = Mock()
     setting_mock.configure_mock(**{
@@ -2316,7 +2317,7 @@ def test_create_with_kernel_sysctls(mock_get_current_user_name, mock_setting_get
     assert uml_sysctls['net.ipv4.ip_forward'] == 1
     assert uml_sysctls['net.ipv6.conf.all.disable_ipv6'] == 1
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(UmlSettings(sysctls=uml_sysctls)))
+                                            uml_helpers_tar(UmlSettings(sysctls=uml_sysctls, envs={'GREETING': 'hello world'})))
 
 
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):

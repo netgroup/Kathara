@@ -4,8 +4,9 @@ from typing import Dict, Union
 
 # Scripts that a device with its own UML kernel (lab.conf: dev[kernel]="/path/to/linux") runs. They are copied into
 # the container at creation, in /kathara-uml: start is the entrypoint of the container, init the PID 1 of the UML,
-# ushell the shell of the device (startup, exec and connect go into the UML through it). With them goes
-# sysctl.conf, the sysctls that Kathara gives the container, which init applies to the UML kernel.
+# ushell the shell of the device (startup, exec and connect go into the UML through it). With them go the settings
+# of the device (UmlSettings): sysctl.conf, the sysctls that Kathara gives the container, which init applies to the
+# UML kernel, and environment, the variables of the device, which ushell exports in the UML.
 
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
@@ -219,12 +220,17 @@ done
 USHELL = r"""#!/bin/bash
 # Shell of a Kathara UML device. Kathara runs the startup as `shell -c
 # CMDS`, exec as `shell -c CMD` and connect as `shell`: all go into the
-# UML through one ssh on the management veth.
+# UML through one ssh on the management veth, with the environment of the
+# device exported first.
 # While the UML boots, ssh retries only the TCP connect, once a second
 # (ConnectionAttempts), so a command never runs twice. ConnectTimeout
 # bounds each connect and the ssh banner exchange.
 
 KEY=/var/lib/kathara-uml/id
+ENVIRONMENT=/kathara-uml/environment
+# The login shell of root in the UML, for connect: $SHELL is expanded there.
+# shellcheck disable=SC2016
+LOGIN_SHELL='exec "$SHELL" -l'
 SSH=(ssh -q -i "$KEY"
 	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
 	-o ConnectionAttempts=120 -o ConnectTimeout=10
@@ -244,12 +250,27 @@ wait_for_key()
 	done
 }
 
+# The environment of the device, which Kathara writes in environment, one
+# NAME=VALUE per line, as export commands for the shell of the UML: there
+# ssh starts a new session, without it.
+exports()
+{
+	local setting
+
+	if [ ! -f "$ENVIRONMENT" ]; then
+		return
+	fi
+	while IFS= read -r setting; do
+		printf 'export %q; ' "$setting"
+	done < "$ENVIRONMENT"
+}
+
 wait_for_key
 if [ "$1" = -c ]; then
 	shift
-	exec "${SSH[@]}" -T -- "$*"
+	exec "${SSH[@]}" -T -- "$(exports)$*"
 fi
-exec "${SSH[@]}" -t
+exec "${SSH[@]}" -t -- "$(exports)$LOGIN_SHELL"
 """
 
 
@@ -265,17 +286,32 @@ def uml_sysctl_conf(sysctls: Dict[str, Union[int, str]]) -> str:
     return "".join(f"{name}={value}\n" for name, value in sorted(sysctls.items()))
 
 
+def uml_environment(envs: Dict[str, str]) -> str:
+    """Return the environment variables of a device in the format that ushell reads: one NAME=VALUE per line,
+    sorted by name.
+
+    Args:
+        envs (Dict[str, str]): The environment variables of the device.
+
+    Returns:
+        str: The content of environment.
+    """
+    return "".join(f"{name}={value}\n" for name, value in sorted(envs.items()))
+
+
 class UmlSettings(object):
     """The settings of a device that the helpers apply inside its UML kernel, as Docker applies them to a container.
 
     Attributes:
         sysctls (Dict[str, Union[int, str]]): The sysctls that Kathara gives the container, the interface ones
             included.
+        envs (Dict[str, str]): The environment variables of the device.
     """
-    __slots__ = ['sysctls']
+    __slots__ = ['sysctls', 'envs']
 
-    def __init__(self, sysctls: Dict[str, Union[int, str]]) -> None:
+    def __init__(self, sysctls: Dict[str, Union[int, str]], envs: Dict[str, str]) -> None:
         self.sysctls: Dict[str, Union[int, str]] = sysctls
+        self.envs: Dict[str, str] = envs
 
     def files(self) -> Dict[str, str]:
         """Return the files that carry the settings into the container, by their name in /kathara-uml.
@@ -283,7 +319,7 @@ class UmlSettings(object):
         Returns:
             Dict[str, str]: The content of each file.
         """
-        return {"sysctl.conf": uml_sysctl_conf(self.sysctls)}
+        return {"sysctl.conf": uml_sysctl_conf(self.sysctls), "environment": uml_environment(self.envs)}
 
 
 def uml_helpers_tar(settings: UmlSettings) -> bytes:

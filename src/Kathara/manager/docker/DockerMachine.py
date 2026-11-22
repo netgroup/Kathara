@@ -416,7 +416,7 @@ class DockerMachine(object):
             self.copy_files(machine_container, "/", tar_data)
 
         if uml_kernel:
-            self.copy_files(machine_container, "/", uml_helpers_tar(UmlSettings(sysctls=uml_sysctls)))
+            self.copy_files(machine_container, "/", uml_helpers_tar(UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'])))
 
         machine.api_object = machine_container
 
