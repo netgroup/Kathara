@@ -378,6 +378,8 @@ class DockerMachine(object):
 
             entrypoint = shlex.split(machine.meta["entrypoint"]) if "entrypoint" in machine.meta else None
             if uml_kernel:
+                # The shell of the device runs inside the UML, behind ushell.
+                uml_shell = labels["shell"]
                 labels["uml"] = "1"
                 labels["shell"] = "/kathara-uml/ushell"
                 entrypoint = ["/kathara-uml/start"]
@@ -416,7 +418,9 @@ class DockerMachine(object):
             self.copy_files(machine_container, "/", tar_data)
 
         if uml_kernel:
-            self.copy_files(machine_container, "/", uml_helpers_tar(UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'])))
+            self.copy_files(machine_container, "/", uml_helpers_tar(
+                UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'], shell=uml_shell)
+            ))
 
         machine.api_object = machine_container
 

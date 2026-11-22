@@ -2179,7 +2179,7 @@ def test_create_with_kernel(mock_get_current_user_name, mock_setting_get_instanc
     )
 
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(UmlSettings(sysctls=sysctls, envs={})))
+                                            uml_helpers_tar(UmlSettings(sysctls=sysctls, envs={}, shell='/bin/bash')))
 
 
 @mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
@@ -2294,6 +2294,7 @@ def test_create_with_kernel_settings(mock_get_current_user_name, mock_setting_ge
     default_device.add_meta("sysctl", "net.ipv4.tcp_syncookies=0")
     default_device.add_meta("sysctl", "net.ipv4.conf.eth1.rp_filter=2")
     default_device.add_meta("env", "GREETING=hello world")
+    default_device.add_meta("shell", "/bin/sh")
 
     setting_mock = Mock()
     setting_mock.configure_mock(**{
@@ -2317,7 +2318,9 @@ def test_create_with_kernel_settings(mock_get_current_user_name, mock_setting_ge
     assert uml_sysctls['net.ipv4.ip_forward'] == 1
     assert uml_sysctls['net.ipv6.conf.all.disable_ipv6'] == 1
     mock_copy_files.assert_called_once_with(docker_machine.client.containers.create.return_value, "/",
-                                            uml_helpers_tar(UmlSettings(sysctls=uml_sysctls, envs={'GREETING': 'hello world'})))
+                                            uml_helpers_tar(
+        UmlSettings(sysctls=uml_sysctls, envs={'GREETING': 'hello world'}, shell='/bin/sh')
+    ))
 
 
 def test_start_uml(docker_machine, default_device, default_link, default_link_b):

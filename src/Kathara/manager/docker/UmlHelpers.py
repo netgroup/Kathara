@@ -6,7 +6,8 @@ from typing import Dict, Union
 # the container at creation, in /kathara-uml: start is the entrypoint of the container, init the PID 1 of the UML,
 # ushell the shell of the device (startup, exec and connect go into the UML through it). With them go the settings
 # of the device (UmlSettings): sysctl.conf, the sysctls that Kathara gives the container, which init applies to the
-# UML kernel, and environment, the variables of the device, which ushell exports in the UML.
+# UML kernel, environment, the variables of the device, which ushell exports in the UML, and shell, the shell of the
+# device, in which ushell runs the commands and which connect opens.
 
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
@@ -221,16 +222,15 @@ USHELL = r"""#!/bin/bash
 # Shell of a Kathara UML device. Kathara runs the startup as `shell -c
 # CMDS`, exec as `shell -c CMD` and connect as `shell`: all go into the
 # UML through one ssh on the management veth, with the environment of the
-# device exported first.
+# device exported first, and run there in the shell of the device, as in
+# a container.
 # While the UML boots, ssh retries only the TCP connect, once a second
 # (ConnectionAttempts), so a command never runs twice. ConnectTimeout
 # bounds each connect and the ssh banner exchange.
 
 KEY=/var/lib/kathara-uml/id
 ENVIRONMENT=/kathara-uml/environment
-# The login shell of root in the UML, for connect: $SHELL is expanded there.
-# shellcheck disable=SC2016
-LOGIN_SHELL='exec "$SHELL" -l'
+SHELL_FILE=/kathara-uml/shell
 SSH=(ssh -q -i "$KEY"
 	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
 	-o ConnectionAttempts=120 -o ConnectTimeout=10
@@ -265,12 +265,24 @@ exports()
 	done < "$ENVIRONMENT"
 }
 
+# The shell of the device, which Kathara writes in shell: the shell option
+# of the device, else the device_shell setting.
+device_shell()
+{
+	if [ -s "$SHELL_FILE" ]; then
+		cat "$SHELL_FILE"
+	else
+		echo /bin/bash
+	fi
+}
+
 wait_for_key
+shell=$(device_shell)
 if [ "$1" = -c ]; then
 	shift
-	exec "${SSH[@]}" -T -- "$(exports)$*"
+	exec "${SSH[@]}" -T -- "$(exports)exec $shell -c $(printf %q "$*")"
 fi
-exec "${SSH[@]}" -t -- "$(exports)$LOGIN_SHELL"
+exec "${SSH[@]}" -t -- "$(exports)exec $shell"
 """
 
 
@@ -306,12 +318,14 @@ class UmlSettings(object):
         sysctls (Dict[str, Union[int, str]]): The sysctls that Kathara gives the container, the interface ones
             included.
         envs (Dict[str, str]): The environment variables of the device.
+        shell (str): The shell of the device: its shell option, else the device_shell setting.
     """
-    __slots__ = ['sysctls', 'envs']
+    __slots__ = ['sysctls', 'envs', 'shell']
 
-    def __init__(self, sysctls: Dict[str, Union[int, str]], envs: Dict[str, str]) -> None:
+    def __init__(self, sysctls: Dict[str, Union[int, str]], envs: Dict[str, str], shell: str) -> None:
         self.sysctls: Dict[str, Union[int, str]] = sysctls
         self.envs: Dict[str, str] = envs
+        self.shell: str = shell
 
     def files(self) -> Dict[str, str]:
         """Return the files that carry the settings into the container, by their name in /kathara-uml.
@@ -319,7 +333,8 @@ class UmlSettings(object):
         Returns:
             Dict[str, str]: The content of each file.
         """
-        return {"sysctl.conf": uml_sysctl_conf(self.sysctls), "environment": uml_environment(self.envs)}
+        return {"sysctl.conf": uml_sysctl_conf(self.sysctls), "environment": uml_environment(self.envs),
+                "shell": f"{self.shell}\n"}
 
 
 def uml_helpers_tar(settings: UmlSettings) -> bytes:
