@@ -39,6 +39,12 @@ def test_uml_helpers_management_link():
     assert 'MGMT_UML=169.254.77.2\n' in USHELL
 
 
+def test_uml_helpers_tracefs():
+    # init mounts tracefs, where the lines of bpf_printk() go, if the kernel has it.
+    assert '\tif [ -d /sys/kernel/tracing ]; then\n' \
+           '\t\tmount -t tracefs -o nosuid,nodev,noexec tracefs /sys/kernel/tracing\n' in INIT
+
+
 def test_uml_helpers_booted():
     # init touches the file that DockerMachine.start() waits for.
     assert f'\ntouch {UML_BOOTED}\n' in INIT

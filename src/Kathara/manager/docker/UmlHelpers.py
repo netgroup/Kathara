@@ -201,9 +201,12 @@ ULIMITS=/kathara-uml/ulimit.conf
 ULIMIT_LOG=/var/log/uml-ulimit.log
 
 # The filesystems that Docker mounts in a container, with its options,
-# from the kernel of the UML; /dev with the devices of that kernel. The
-# rest of / is the container's own, through hostfs: /run, /etc/hostname,
-# /shared, the volumes.
+# from the kernel of the UML; /dev with the devices of that kernel. For
+# BPF programs also the BPF filesystem and tracefs, where bpf_printk()
+# writes, which Docker does not mount in a container; tracefs only when
+# the kernel has it, as it then makes /sys/kernel/tracing. The rest of /
+# is the container's own, through hostfs: /run, /etc/hostname, /shared,
+# the volumes.
 mount_filesystems()
 {
 	mount -t proc proc /proc
@@ -215,6 +218,9 @@ mount_filesystems()
 	mount -t mqueue -o nosuid,nodev,noexec mqueue /dev/mqueue
 	mount -t cgroup2 -o ro,nosuid,nodev,noexec cgroup /sys/fs/cgroup
 	mount -t bpf bpf /sys/fs/bpf
+	if [ -d /sys/kernel/tracing ]; then
+		mount -t tracefs -o nosuid,nodev,noexec tracefs /sys/kernel/tracing
+	fi
 }
 
 # The vector interfaces are vec0 ... vecN: one per interface of the
