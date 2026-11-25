@@ -16,6 +16,9 @@ from typing import BinaryIO, Dict, Optional, Set, Tuple, Union
 UML_BOOTED = "/run/kathara-uml.booted"
 # The file that start writes the UML console to.
 UML_CONSOLE = "/var/log/uml-console.log"
+# The label of an image that carries a UML kernel: its value is the path of the kernel in the image. A device on
+# such an image, without the kernel option, runs on that kernel.
+UML_KERNEL_LABEL = "org.kathara.uml.kernel"
 
 START = r"""#!/bin/bash
 # Kathara UML device, entrypoint of the container. Waits until Kathara has
@@ -32,7 +35,8 @@ START = r"""#!/bin/bash
 # (KATHARA_UML_BRIDGED_IFACE), goes to the UML too, with the address and
 # the default route that Docker gave it. The memory of the UML is
 # KATHARA_UML_MEM, else three quarters of the memory limit of the
-# container, else 256M.
+# container, else 256M. The kernel is KATHARA_UML_KERNEL, the path of the
+# kernel of the image, else /kathara-uml-kernel, the kernel option.
 
 KEY=/var/lib/kathara-uml/id
 BRIDGED_CONF=/var/lib/kathara-uml/bridged.conf
@@ -177,7 +181,7 @@ rm -f "$CONSOLE_IN"
 mkfifo "$CONSOLE_IN"
 sleep infinity > "$CONSOLE_IN" &
 
-exec env TMPDIR="$UML_TMP" /kathara-uml-kernel mem="$mem" \
+exec env TMPDIR="$UML_TMP" "${KATHARA_UML_KERNEL:-/kathara-uml-kernel}" mem="$mem" \
 	root=/dev/root rootfstype=hostfs rootflags=/ rw init=/kathara-uml/init \
 	con0=fd:0,fd:1 con=null seccomp="$seccomp" "${vectors[@]}" \
 	< "$CONSOLE_IN" > /var/log/uml-console.log 2>&1
@@ -583,12 +587,25 @@ def uml_kernel_error(path: str, host_arch: str) -> Optional[str]:
     Returns:
         Optional[str]: Why the file cannot be the UML kernel, or None if it can.
     """
+    with open(path, "rb") as file:
+        return uml_kernel_file_error(file, host_arch)
+
+
+def uml_kernel_file_error(file: BinaryIO, host_arch: str) -> Optional[str]:
+    """Return why a file, open in binary mode, cannot be the UML kernel of a device on this host.
+
+    Args:
+        file (BinaryIO): The file, open in binary mode.
+        host_arch (str): The architecture of the host, as utils.get_architecture() names it.
+
+    Returns:
+        Optional[str]: Why the file cannot be the UML kernel, or None if it can.
+    """
     if host_arch not in UML_ARCHITECTURES.values():
         return f"UML runs only on x86 hosts, this host is `{host_arch}`"
-    with open(path, "rb") as file:
-        elf = elf_sections(file)
-        file.seek(BZIMAGE_MAGIC_OFFSET)
-        bzimage = file.read(len(BZIMAGE_MAGIC)) == BZIMAGE_MAGIC
+    elf = elf_sections(file)
+    file.seek(BZIMAGE_MAGIC_OFFSET)
+    bzimage = file.read(len(BZIMAGE_MAGIC)) == BZIMAGE_MAGIC
     if elf is None and bzimage:
         return "it is a kernel boot image (bzImage), not a UML kernel: build the kernel with ARCH=um"
     if elf is None or UML_SECTION not in elf[2]:

@@ -1,6 +1,7 @@
 import io
 import logging
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -19,7 +20,8 @@ from docker.types import Ulimit
 from docker.utils import version_lt, version_gte
 
 from .DockerImage import DockerImage
-from .UmlHelpers import UmlSettings, uml_helpers_tar, uml_kernel_error, UML_BOOTED, UML_CONSOLE
+from .UmlHelpers import UmlSettings, uml_helpers_tar, uml_kernel_error, uml_kernel_file_error, UML_BOOTED, \
+    UML_CONSOLE, UML_KERNEL_LABEL
 from .exec_stream.DockerExecStream import DockerExecStream
 from .stats.DockerMachineStats import DockerMachineStats
 from ... import utils
@@ -338,6 +340,8 @@ class DockerMachine(object):
         # A device with its own UML kernel: the container runs that kernel on its own rootfs (hostfs), the
         # helpers attach one UML interface per collision domain and forward the device shell into the UML.
         uml_kernel = machine.meta["kernel"] if "kernel" in machine.meta else None
+        # Without the kernel option, the image may carry a UML kernel, at the path that its label names.
+        image_kernel = None if uml_kernel else self._get_image_uml_kernel(image)
         environment = machine.meta['envs']
         if uml_kernel:
             # A relative path is relative to the network scenario directory, as the other files of the scenario.
@@ -351,15 +355,18 @@ class DockerMachine(object):
             uml_error = uml_kernel_error(uml_kernel, utils.get_architecture())
             if uml_error:
                 raise MachineOptionError(f"Device `{machine.name}` cannot run on `{uml_kernel}`: {uml_error}.")
+            logging.debug(f"Device `{machine.name}` runs on UML kernel `{uml_kernel}`...")
+            volumes[uml_kernel] = {'bind': '/kathara-uml-kernel', 'mode': 'ro'}
+        elif image_kernel:
+            environment = dict(environment, KATHARA_UML_KERNEL=image_kernel)
+        if uml_kernel or image_kernel:
             # The UML kernel is the main process of the container: its entrypoint is taken.
             if "entrypoint" in machine.meta or machine.meta.get("args"):
                 raise MachineOptionError(
                     f"Device `{machine.name}` runs on a UML kernel, which is the entrypoint of its container: "
-                    f"the entrypoint and args options cannot be used with kernel. Start programs from the "
+                    f"the entrypoint and args options cannot be used on it. Start programs from the "
                     f"startup file of the device instead."
                 )
-            logging.debug(f"Device `{machine.name}` runs on UML kernel `{uml_kernel}`...")
-            volumes[uml_kernel] = {'bind': '/kathara-uml-kernel', 'mode': 'ro'}
             environment = dict(environment, KATHARA_UML_IFACES=str(len(machine.interfaces)))
             if machine.is_bridged():
                 environment["KATHARA_UML_BRIDGED_IFACE"] = str(machine.meta["bridged_iface"])
@@ -396,7 +403,7 @@ class DockerMachine(object):
                 labels["bridged_iface"] = str(machine.meta["bridged_iface"])
 
             entrypoint = shlex.split(machine.meta["entrypoint"]) if "entrypoint" in machine.meta else None
-            if uml_kernel:
+            if uml_kernel or image_kernel:
                 # The shell of the device runs inside the UML, behind ushell.
                 uml_shell = labels["shell"]
                 labels["uml"] = "1"
@@ -431,12 +438,23 @@ class DockerMachine(object):
         except APIError as e:
             raise e
 
+        # The kernel of an image can be read only from a container: refused, with the container, if it is not a UML
+        # kernel for this host.
+        if image_kernel:
+            uml_error = self._image_uml_kernel_error(machine_container, image_kernel)
+            if uml_error:
+                machine_container.remove(force=True)
+                raise MachineOptionError(
+                    f"Device `{machine.name}` cannot run on `{image_kernel}` of image `{image}`: {uml_error}."
+                )
+            logging.info(f"Device `{machine.name}` runs on the UML kernel of image `{image}`.")
+
         # Pack machine files into a tar.gz and extract its content inside `/`
         tar_data = machine.pack_data()
         if tar_data:
             self.copy_files(machine_container, "/", tar_data)
 
-        if uml_kernel:
+        if uml_kernel or image_kernel:
             self.copy_files(machine_container, "/", uml_helpers_tar(
                 UmlSettings(sysctls=uml_sysctls, envs=machine.meta['envs'], shell=uml_shell,
                             ulimits=machine.get_ulimits())
@@ -682,6 +700,42 @@ class DockerMachine(object):
             f"The UML kernel of device `{machine.name}` did not boot: {reason}. "
             f"From its console ({UML_CONSOLE}):\n" + "\n".join(shown)
         )
+
+    def _get_image_uml_kernel(self, image: str) -> Optional[str]:
+        """Return the path of the UML kernel that an image carries, the value of its label UML_KERNEL_LABEL.
+
+        Args:
+            image (str): The name of a Docker image, already pulled.
+
+        Returns:
+            Optional[str]: The path of the UML kernel in the image, or None if the image has no such label.
+        """
+        try:
+            labels = self.docker_image.get_local(image).labels
+        except APIError:
+            return None
+        return labels.get(UML_KERNEL_LABEL) or None
+
+    def _image_uml_kernel_error(self, container: docker.models.containers.Container, path: str) -> Optional[str]:
+        """Return why the file at path in a container, from its image, cannot be the UML kernel of a device on this
+        host.
+
+        Args:
+            container (docker.models.containers.Container): The container of the device, created, not started.
+            path (str): The path of the UML kernel in the image, from its label UML_KERNEL_LABEL.
+
+        Returns:
+            Optional[str]: Why the file cannot be the UML kernel, or None if it can.
+        """
+        if not posixpath.isabs(path):
+            return f"the label `{UML_KERNEL_LABEL}` of the image must be an absolute path"
+        try:
+            kernel = self._read_file(container, path)
+        except (AttributeError, KeyError):
+            return "it is not a regular file of the image"
+        if kernel is None:
+            return "the image has no such file"
+        return uml_kernel_file_error(io.BytesIO(kernel), utils.get_architecture())
 
     @staticmethod
     def _read_file(container: docker.models.containers.Container, path: str) -> Optional[bytes]:

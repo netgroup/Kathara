@@ -8,7 +8,7 @@ sys.path.insert(0, './')
 import pytest
 
 from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, uml_sysctl_conf, uml_environment, \
-    uml_ulimit_conf, uml_kernel_error, START, INIT, USHELL, UML_BOOTED, UML_CONSOLE
+    uml_ulimit_conf, uml_kernel_error, uml_kernel_file_error, START, INIT, USHELL, UML_BOOTED, UML_CONSOLE
 
 
 def test_uml_helpers_tar():
@@ -140,3 +140,16 @@ def test_uml_kernel_error(tmp_path, kernel, host_arch, error):
     path.write_bytes(kernel)
 
     assert uml_kernel_error(str(path), host_arch) == error
+
+
+@pytest.mark.parametrize("kernel,host_arch,error", [
+    (UML_AMD64, "amd64", None),
+    (UML_AMD64, "arm64", "UML runs only on x86 hosts, this host is `arm64`"),
+    (VMLINUX, "amd64", "it is not a UML kernel: build the kernel with ARCH=um"),
+])
+def test_uml_kernel_file_error(kernel, host_arch, error):
+    assert uml_kernel_file_error(io.BytesIO(kernel), host_arch) == error
+
+
+def test_start_runs_the_kernel_of_the_image():
+    assert '"${KATHARA_UML_KERNEL:-/kathara-uml-kernel}" mem="$mem"' in START

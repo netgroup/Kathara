@@ -20,7 +20,8 @@ from src.Kathara.model.Machine import Machine
 from src.Kathara.manager.docker.DockerMachine import DockerMachine, UML_BOOT_TIMEOUT
 from src.Kathara.exceptions import DockerPluginError, MachineBinaryError, PrivilegeError, InvocationError, \
     MountDeniedError, MachineOptionError, MachineBootError
-from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, UML_BOOTED, UML_CONSOLE
+from src.Kathara.manager.docker.UmlHelpers import UmlSettings, uml_helpers_tar, UML_BOOTED, UML_CONSOLE, \
+    UML_KERNEL_LABEL
 from src.Kathara.types import SharedCollisionDomainsOption
 from src.Kathara.event.EventDispatcher import EventDispatcher
 
@@ -33,6 +34,8 @@ from src.Kathara.event.EventDispatcher import EventDispatcher
 @mock.patch("docker.DockerClient")
 def docker_machine(mock_docker_client, mock_docker_image):
     mock_docker_client.version.return_value = {"Version": "27.0.0"}
+    # The images of the tests carry no UML kernel, unless a test gives them the label.
+    mock_docker_image.get_local.return_value.labels = {}
     return DockerMachine(mock_docker_client, mock_docker_image)
 
 
@@ -2437,6 +2440,128 @@ def test_create_with_kernel_and_entrypoint(mock_get_current_user_name, mock_sett
         docker_machine.create(default_device)
 
     assert not docker_machine.client.containers.create.called
+
+
+def uml_setting_mock():
+    """Return the settings of the tests of a UML device."""
+    setting_mock = Mock()
+    setting_mock.configure_mock(**{
+        'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
+        'device_prefix': 'dev_prefix',
+        "device_shell": '/bin/bash',
+        'enable_ipv6': True,
+        'remote_url': None,
+        'hosthome_mount': False,
+        'shared_mount': False
+    })
+    return setting_mock
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.uml_kernel_file_error")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_image_kernel(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                  mock_get_machines_api_objects_by_filters, mock_uml_kernel_file_error, docker_machine,
+                                  default_device):
+    mock_uml_kernel_file_error.return_value = None
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = uml_setting_mock()
+    docker_machine.docker_image.get_local.return_value.labels = {UML_KERNEL_LABEL: "/usr/lib/kathara-uml/linux"}
+    container = docker_machine.client.containers.create.return_value
+    container.get_archive.side_effect = container_files({"/usr/lib/kathara-uml/linux": b"uml"})
+
+    docker_machine.create(default_device)
+
+    docker_machine.docker_image.get_local.assert_called_once_with('kathara/test')
+    _, kwargs = docker_machine.client.containers.create.call_args
+    assert kwargs['environment'] == {'KATHARA_UML_KERNEL': '/usr/lib/kathara-uml/linux', 'KATHARA_UML_IFACES': '0'}
+    assert kwargs['volumes'] == {}
+    assert kwargs['labels']['uml'] == '1'
+    assert kwargs['labels']['shell'] == '/kathara-uml/ushell'
+    assert kwargs['entrypoint'] == ['/kathara-uml/start']
+    container.get_archive.assert_called_once_with("/usr/lib/kathara-uml/linux")
+    assert mock_uml_kernel_file_error.call_args.args[0].getvalue() == b"uml"
+    assert not container.remove.called
+    mock_copy_files.assert_called_once_with(container, "/", uml_helpers_tar(
+        UmlSettings(sysctls=kwargs['sysctls'], envs={}, shell='/bin/bash', ulimits={})
+    ))
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.uml_kernel_error")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_kernel_over_image_kernel(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                              mock_get_machines_api_objects_by_filters, mock_uml_kernel_error,
+                                              docker_machine, default_device, tmp_path):
+    mock_uml_kernel_error.return_value = None
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = uml_setting_mock()
+    docker_machine.docker_image.get_local.return_value.labels = {UML_KERNEL_LABEL: "/usr/lib/kathara-uml/linux"}
+    kernel = tmp_path / "linux"
+    kernel.write_bytes(b"uml")
+    default_device.add_meta("kernel", str(kernel))
+
+    docker_machine.create(default_device)
+
+    assert not docker_machine.docker_image.get_local.called
+    _, kwargs = docker_machine.client.containers.create.call_args
+    assert kwargs['environment'] == {'KATHARA_UML_IFACES': '0'}
+    assert kwargs['volumes'] == {str(kernel): {'bind': '/kathara-uml-kernel', 'mode': 'ro'}}
+    assert kwargs['labels']['uml'] == '1'
+    assert not docker_machine.client.containers.create.return_value.get_archive.called
+
+
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_without_image_kernel(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                     mock_get_machines_api_objects_by_filters, docker_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = uml_setting_mock()
+    docker_machine.docker_image.get_local.return_value.labels = {"org.opencontainers.image.version": "1"}
+
+    docker_machine.create(default_device)
+
+    _, kwargs = docker_machine.client.containers.create.call_args
+    assert kwargs['environment'] == {}
+    assert 'uml' not in kwargs['labels']
+    assert kwargs['entrypoint'] is None
+    assert not docker_machine.client.containers.create.return_value.get_archive.called
+    assert not mock_copy_files.called
+
+
+@pytest.mark.parametrize("path,files,error", [
+    ("/usr/lib/kathara-uml/linux", {"/usr/lib/kathara-uml/linux": b"not a kernel"}, "it is not a UML kernel"),
+    ("/usr/lib/kathara-uml/linux", {}, "the image has no such file"),
+    ("usr/lib/kathara-uml/linux", {}, "must be an absolute path"),
+])
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.docker.DockerMachine.DockerMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_with_image_kernel_refused(mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+                                          mock_get_machines_api_objects_by_filters, docker_machine, default_device,
+                                          path, files, error):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = uml_setting_mock()
+    docker_machine.docker_image.get_local.return_value.labels = {UML_KERNEL_LABEL: path}
+    container = docker_machine.client.containers.create.return_value
+    container.get_archive.side_effect = container_files(files)
+
+    with pytest.raises(MachineOptionError, match=error):
+        docker_machine.create(default_device)
+
+    container.remove.assert_called_once_with(force=True)
+    assert not mock_copy_files.called
 
 
 def container_files(files: dict):

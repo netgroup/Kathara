@@ -36,7 +36,7 @@ If `arg` is an integer value, then `value` is the name of the collision domain t
 If `arg` is an option name, then `device` will be launched with option `arg` set to value `value`.
 
 * `image` (string):
-	Docker image used for this device.
+	Docker image used for this device. An image that carries a UML kernel runs the device on it, see `kernel`.
 
 * `mem` (string):
 	Set the amount of available RAM inside the device. If you set this option, the minimum allowed value is 4m (4 megabyte).
@@ -105,6 +105,9 @@ If `arg` is an option name, then `device` will be launched with option `arg` set
 	ulimits, and the startup, `exec` and `connect` get its environment variables and run in its shell. The UML kernel is the entrypoint of the container, so `entrypoint` and `args` cannot be used
 	with `kernel`: start programs from the startup file of the device. The file must be a UML kernel (built with
 	`ARCH=um`) for the architecture of the host, and UML runs only on x86 hosts: any other file is refused.
+	An image can carry its own UML kernel: the label `org.kathara.uml.kernel` of the image names the absolute path of
+	the kernel in the image. A device on such an image runs on that kernel without the `kernel` option, as with it,
+	and `kernel`, if given, takes its place.
 	NOTE: Only with the Docker manager.
 
 
